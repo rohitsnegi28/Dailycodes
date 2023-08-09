@@ -77,6 +77,40 @@ public class FileController : ControllerBase
 
 
 
+using Microsoft.AspNetCore.Mvc;
+using System.IO;
+
+public class FileController : ControllerBase
+{
+    public IActionResult GetFilesResponse()
+    {
+        var files = new List<string>
+        {
+            "path_to_file1.txt",
+            "path_to_file2.txt",
+            // Add more file paths as needed
+        };
+
+        var fileStreams = new List<Stream>();
+
+        foreach (var filePath in files)
+        {
+            var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+            fileStreams.Add(fileStream);
+        }
+
+        var result = new FileStreamResult(fileStreams[0], "application/octet-stream")
+        {
+            FileDownloadName = "file1.txt"
+        };
+
+        return result;
+    }
+}
+
+
+
+
 
 
 
