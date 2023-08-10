@@ -112,5 +112,46 @@ public class FileController : ControllerBase
 
 
 
+using System;
+using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Web.Http;
+
+public class FileController : ApiController
+{
+    public HttpResponseMessage Get()
+    {
+        // Replace with your actual file path
+        string filePath = "C:\\path\\to\\your\\file.msg";
+
+        if (File.Exists(filePath))
+        {
+            HttpResponseMessage response = new HttpResponseMessage(HttpStatusCode.OK);
+
+            byte[] fileBytes = File.ReadAllBytes(filePath);
+            MemoryStream memoryStream = new MemoryStream(fileBytes);
+
+            response.Content = new StreamContent(memoryStream);
+            response.Content.Headers.ContentDisposition = new System.Net.Http.Headers.ContentDispositionHeaderValue("attachment")
+            {
+                FileName = "file.msg"
+            };
+
+            response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+            response.Headers.Add("Custom-Message", "File downloaded successfully.");
+
+            return response;
+        }
+        else
+        {
+            return Request.CreateErrorResponse(HttpStatusCode.NotFound, "File not found.");
+        }
+    }
+}
+
+
+
+
 
 
