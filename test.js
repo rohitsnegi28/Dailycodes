@@ -1,4 +1,4 @@
-const fetchDownStreamAndExpandTree = async (tree, movementData, locale, setServerErrors, setExpandedNodes, setSelectedRowIndex, showTerminatedRecords, reqObj) => {
+const fetchDownStreamAndExpandTree = async (tree, movementData, locale, setServerErrors, setExpandedNodes, setSelectedRowIndex, showTerminatedRecords) => {
     let nodes = tree;
     let tempExpandedNodes1 = {};
     let selectedRowString = '';
@@ -6,25 +6,26 @@ const fetchDownStreamAndExpandTree = async (tree, movementData, locale, setServe
 
     const processNodesSequentially = async () => {
         for (const node of nodes) {
-            await processNode(node);
+            await processNode({...node});
             if (isExpansionAchieved) break;
         }
     };
 
     const processNode = async (currentNode, index) => {
-        if (!currentNode.children || currentNode.children.length === 0) {
-            const children = await fetchHierarchyDownStream(currentNode, locale, setServerErrors, showTerminatedRecords);
-            currentNode.children = children;
+        let modifiedNode = {...currentNode}; // Create a copy of the currentNode
+        if (!modifiedNode.children || modifiedNode.children.length === 0) {
+            const children = await fetchHierarchyDownStream(modifiedNode, locale, setServerErrors, showTerminatedRecords);
+            modifiedNode.children = children;
         }
         
-        nodes = currentNode.children;
+        nodes = modifiedNode.children;
         const tempExpandedNodes = { ...tempExpandedNodes1 };
         tempExpandedNodes[index] = {};
         tempExpandedNodes1 = tempExpandedNodes;
         
         selectedRowString = selectedRowString ? `${selectedRowString}-${index}` : `${index}`;
 
-        const childIndex = currentNode.children.findIndex((child) => child.code === movementData.movOrgCd && child.level === movementData.level);
+        const childIndex = modifiedNode.children.findIndex((child) => child.code === movementData.movOrgCd && child.level === movementData.level);
         if (childIndex > -1) {
             isExpansionAchieved = true;
             selectedRowString = `${selectedRowString}-${childIndex}`;
