@@ -1,28 +1,18 @@
+
 const fetchDownStreamAndExpandTree = async (tree, movementData, locale, setServerErrors, setExpandedNodes, setSelectedRowIndex, showTerminatedRecords) => {
-    let nodes = tree;
-    let tempExpandedNodes1 = {};
+    let currentNodes = tree;
+    let tempExpandedNodes = {};
     let selectedRowString = '';
     let isExpansionAchieved = false;
 
-    const processNodesSequentially = async () => {
-        for (const node of nodes) {
-            await processNode({...node});
-            if (isExpansionAchieved) break;
-        }
-    };
-
     const processNode = async (currentNode, index) => {
-        let modifiedNode = {...currentNode}; // Create a copy of the currentNode
+        let modifiedNode = { ...currentNode };
         if (!modifiedNode.children || modifiedNode.children.length === 0) {
-            const children = await fetchHierarchyDownStream(modifiedNode, locale, setServerErrors, showTerminatedRecords);
-            modifiedNode.children = children;
+            modifiedNode.children = await fetchHierarchyDownStream(modifiedNode, locale, setServerErrors, showTerminatedRecords);
         }
-        
-        nodes = modifiedNode.children;
-        const tempExpandedNodes = { ...tempExpandedNodes1 };
+
         tempExpandedNodes[index] = {};
-        tempExpandedNodes1 = tempExpandedNodes;
-        
+
         selectedRowString = selectedRowString ? `${selectedRowString}-${index}` : `${index}`;
 
         const childIndex = modifiedNode.children.findIndex((child) => child.code === movementData.movOrgCd && child.level === movementData.level);
@@ -30,6 +20,20 @@ const fetchDownStreamAndExpandTree = async (tree, movementData, locale, setServe
             isExpansionAchieved = true;
             selectedRowString = `${selectedRowString}-${childIndex}`;
         }
+
+        if (!isExpansionAchieved && modifiedNode.children) {
+            const promises = modifiedNode.children.map(async (childNode, childIndex) => {
+                await processNode(childNode, childIndex);
+            });
+            await Promise.all(promises);
+        }
+    };
+
+    const processNodesSequentially = async () => {
+        const promises = currentNodes.map(async (node, index) => {
+            await processNode(node, index);
+        });
+        await Promise.all(promises);
     };
 
     for (const key of Object.keys(hierArr)) {
@@ -40,7 +44,7 @@ const fetchDownStreamAndExpandTree = async (tree, movementData, locale, setServe
         await processNodesSequentially();
     }
 
-    const expandedNodesCopy = { ...tempExpandedNodes1 };
+    const expandedNodesCopy = { ...tempExpandedNodes };
     const selectedRowStringCopy = selectedRowString;
     setExpandedNodes(expandedNodesCopy);
     setSelectedRowIndex(selectedRowStringCopy);
