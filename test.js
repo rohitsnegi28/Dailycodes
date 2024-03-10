@@ -1,12 +1,29 @@
 const fetchDownStreamAndExpandTree = async (tree, movementData, locale, setServerErrors, setExpandedNodes, setSelectedRowIndex, showTerminatedRecords) => {
     let nodes = tree;
-    const keys = Object.keys(hierArr);
     let tempExpandedNodes1 = {};
-    const tempExpandedNodes2 = tempExpandedNodes1;
     let selectedRowString = '';
     let isExpansionAchieved = false;
-    
-    for (const key of keys) {
+
+    const processNode = async (node, index) => {
+        if (!node.children || node.children.length === 0) {
+            const children = await fetchHierarchyDownStream(node, locale, setServerErrors, showTerminatedRecords);
+            node.children = children;
+        }
+        
+        nodes = node.children;
+        tempExpandedNodes1[index] = {};
+        tempExpandedNodes1 = tempExpandedNodes1[index];
+        
+        selectedRowString = selectedRowString ? `${selectedRowString}-${index}` : `${index}`;
+
+        const childIndex = node.children.findIndex((child) => child.code === movementData.movOrgCd && child.level === movementData.level);
+        if (childIndex > -1) {
+            isExpansionAchieved = true;
+            selectedRowString = `${selectedRowString}-${childIndex}`;
+        }
+    };
+
+    for (const key of Object.keys(hierArr)) {
         if (movementData[`movOrg${key}`]) {
             let flag = true;
             let i = 0;
@@ -19,41 +36,23 @@ const fetchDownStreamAndExpandTree = async (tree, movementData, locale, setServe
                 }
                 
                 if (node.level === hierArr[key] && node.code === movementData[`movOrg${key}`]) {
-                    if (!node.children || node.children?.length === 0) {
-                        const children = await fetchHierarchyDownStream(node, locale, setServerErrors, showTerminatedRecords);
-                        node.children = children;
-                    }
-                    
-                    nodes = node.children;
-                    tempExpandedNodes1[i] = {};
-                    tempExpandedNodes1 = tempExpandedNodes1[i];
+                    await processNode(node, i);
                     flag = false;
-                    
-                    if (selectedRowString.length > 0) {
-                        selectedRowString = `${selectedRowString}-${i}`;
-                    } else {
-                        selectedRowString = `${i}`;
-                    }
-                    
-                    const childIndex = node.children.findIndex((child) => child.code === movementData.movOrgCd && child.level === movementData.level);
-                    if (childIndex > -1) {
-                        isExpansionAchieved = true;
-                        selectedRowString = `${selectedRowString}-${childIndex}`;
-                        break;
-                    }
+                    break;
                 }
                 
                 if (!flag) {
                     break;
                 }
             }
+            i += 1;
         }
-        i += 1;
+
         if (isExpansionAchieved) {
             break;
         }
     }
     
-    setExpandedNodes(tempExpandedNodes2);
+    setExpandedNodes({});
     setSelectedRowIndex(selectedRowString);
 };
