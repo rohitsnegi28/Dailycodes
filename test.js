@@ -5,14 +5,13 @@ const fetchDownstreamAndExpandTree = async ({ tree, movementData, locale, setSer
 
     const expandCurrentNode = async (node) => {
         if (!node.children || node.children.length === 0) {
-            const children = await fetchHierarchyDownstreamFn(node, locale, setServerErrors, showTerminatedRecords);
-            node.children = children;
+            node.children = await fetchHierarchyDownstreamFn(node, locale, setServerErrors, showTerminatedRecords);
         }
 
-        if (selectedRowIndex.length > 0) {
-            selectedRowIndex = `${selectedRowIndex}-${expansionIndex}`;
-        } else {
+        if (selectedRowIndex.length === 0) {
             selectedRowIndex = `${expansionIndex}`;
+        } else {
+            selectedRowIndex = `${selectedRowIndex}-${expansionIndex}`;
         }
 
         const childIndex = node.children.findIndex(child => compareTwoNodes(child.code, movementData.movOrgCd, child.level, movementData[`movOrg${key}`]));
@@ -22,16 +21,15 @@ const fetchDownstreamAndExpandTree = async ({ tree, movementData, locale, setSer
         }
     };
 
-    const iterateNodesForExpansion = async (key, expansionIndexParam, currentMovLevelExpandedParam) => {
-        let expansionIndex = expansionIndexParam;
-        let currentMovLevelExpanded = currentMovLevelExpandedParam;
-
+    const iterateNodesForExpansion = async (key, expansionIndex, currentMovLevelExpanded) => {
         for (const node of tree) {
             if (compareTwoNodes(node.code, movementData.movOrgCd, node.level, movementData.level)) {
                 selectedRowIndex = '0';
                 isExpansionAchieved = true;
                 break;
-            } else if (compareTwoNodes(node.level, hierArr[key], node.code, movementData[`movOrg${key}`])) {
+            }
+
+            if (compareTwoNodes(node.level, hierArr[key], node.code, movementData[`movOrg${key}`])) {
                 await expandCurrentNode(node);
             }
 
@@ -43,9 +41,7 @@ const fetchDownstreamAndExpandTree = async ({ tree, movementData, locale, setSer
         }
     };
 
-    const hierIndexs = Object.keys(hierArr);
-
-    for (const key of hierIndexs) {
+    for (const key of Object.keys(hierArr)) {
         if (movementData[`movOrg${key}`]) {
             let currentMovLevelExpanded = false;
             let expansionIndex = 0;
