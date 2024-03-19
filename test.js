@@ -1,59 +1,28 @@
-const fetchDownstreamAndExpandTree = async ({ tree, movementData, locale, setServerErrors, setExpandedNodes, setSelectedRowIndex, showTerminatedRecords, fetchHierarchyDownstreamFn }) => {
-    let expandedNodes = {};
-    let selectedRowIndex = '';
-    let isExpansionAchieved = false;
+function formatDecimal(number) {
+    // Convert number to string
+    let numberStr = number.toString();
 
-    const expandCurrentNode = async (node) => {
-        if (!node.children || node.children.length === 0) {
-            node.children = await fetchHierarchyDownstreamFn(node, locale, setServerErrors, showTerminatedRecords);
-        }
-
-        if (selectedRowIndex.length === 0) {
-            selectedRowIndex = `${expansionIndex}`;
-        } else {
-            selectedRowIndex = `${selectedRowIndex}-${expansionIndex}`;
-        }
-
-        const childIndex = node.children.findIndex(child => compareTwoNodes(child.code, movementData.movOrgCd, child.level, movementData[`movOrg${key}`]));
-        if (childIndex > -1) {
-            isExpansionAchieved = true;
-            selectedRowIndex = `${selectedRowIndex}-${childIndex}`;
-        }
-    };
-
-    const iterateNodesForExpansion = async (key, expansionIndex, currentMovLevelExpanded) => {
-        for (const node of tree) {
-            if (compareTwoNodes(node.code, movementData.movOrgCd, node.level, movementData.level)) {
-                selectedRowIndex = '0';
-                isExpansionAchieved = true;
-                break;
-            }
-
-            if (compareTwoNodes(node.level, hierArr[key], node.code, movementData[`movOrg${key}`])) {
-                await expandCurrentNode(node);
-            }
-
-            if (currentMovLevelExpanded) {
-                break;
-            }
-
-            expansionIndex += 1;
-        }
-    };
-
-    for (const key of Object.keys(hierArr)) {
-        if (movementData[`movOrg${key}`]) {
-            let currentMovLevelExpanded = false;
-            let expansionIndex = 0;
-
-            await iterateNodesForExpansion(key, expansionIndex, currentMovLevelExpanded);
-
-            if (isExpansionAchieved) {
-                break;
-            }
-        }
+    // Split the number into integer and decimal parts
+    let parts = numberStr.split('.');
+    
+    // If there are no decimal places, add '.0000' to the end
+    if (parts.length === 1) {
+        return numberStr + '.0000';
     }
 
-    setExpandedNodes(expandedNodes);
-    setSelectedRowIndex(selectedRowIndex);
-};
+    // If there are less than 4 decimal places, pad zeros
+    if (parts[1].length < 4) {
+        parts[1] = parts[1].padEnd(4, '0');
+    } else {
+        // If there are more than 4 decimal places, truncate
+        parts[1] = parts[1].substring(0, 4);
+    }
+
+    // Join the parts back together and return
+    return parts.join('.');
+}
+
+// Example usage:
+let originalNumber = 12.3456789;
+let formattedNumber = formatDecimal(originalNumber);
+console.log(formattedNumber); // Output: 12.3456
