@@ -1,0 +1,24 @@
+/* eslint-disable */
+
+import React from 'react';
+
+class MyComponent extends React.Component {
+  render() {
+    const { condition } = this.props;
+    if (condition) {
+      return <div>Content</div>;
+    }
+    // Missing return statement - ESLint won't complain here
+  }
+}
+
+/* eslint-enable */
+
+// ESLint will start linting again from this point onward
+
+function AnotherComponent() {
+  return <div>Another Component</div>;
+}
+
+export default MyComponent;
+export { AnotherComponent };
