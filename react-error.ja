@@ -1,24 +1,29 @@
 /* eslint-disable */
 
-import React from 'react';
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
 
-class MyComponent extends React.Component {
+  static getDerivedStateFromError(error) {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('Error caught by ErrorBoundary:', error, errorInfo);
+  }
+
   render() {
-    const { condition } = this.props;
-    if (condition) {
-      return <div>Content</div>;
+    if (this.state.hasError) {
+      return <h1>Something went wrong.</h1>;
     }
-    // Missing return statement - ESLint won't complain here
+
+    return this.props.children; 
   }
 }
 
-/* eslint-enable */
-
-// ESLint will start linting again from this point onward
-
-function AnotherComponent() {
-  return <div>Another Component</div>;
-}
-
-export default MyComponent;
-export { AnotherComponent };
+// Wrap your main component with ErrorBoundary
+<ErrorBoundary>
+  <App />
+</ErrorBoundary>
