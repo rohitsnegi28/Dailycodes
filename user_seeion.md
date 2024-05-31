@@ -1,6 +1,11 @@
-Certainly! Here are all the SQL queries and stored procedures formatted for an `md` (Markdown) file.
+Sure, here is the complete SQL code in a well-formatted Markdown document with explanations.
 
-## Create Table
+```markdown
+# SQL Scripts for Managing User Sessions
+
+This document contains the SQL scripts for creating a table and stored procedures to manage user sessions. The table is designed to store user session data, and the stored procedures handle inserting, retrieving, updating, and deleting session records.
+
+## Table Creation Script
 
 ```sql
 -- Drop the table if it already exists
@@ -23,6 +28,18 @@ CREATE TABLE dbo.tbl_online_user_sessions (
 );
 GO
 ```
+
+### Explanation
+- **Table Drop and Creation:** Ensures that the table does not already exist before creating a new one.
+- **Columns:**
+  - `Key`: Primary key, uniquely identifies each session.
+  - `SubjectId`: Identifies the subject.
+  - `SessionId`: Identifies the session.
+  - `Scheme`: Authentication scheme.
+  - `Created`: Timestamp when the session was created.
+  - `Renewed`: Timestamp when the session was last renewed.
+  - `Expires`: Nullable timestamp when the session expires.
+  - `Ticket`: Stores the session ticket.
 
 ## Stored Procedure to Insert Data (`sp_create_user_session`)
 
@@ -57,7 +74,11 @@ END
 GO
 ```
 
-## Stored Procedure to Retrieve Data (`sp_get_user_session`)
+### Explanation
+- **Parameters:** Takes in `Key`, `SubjectId`, `SessionId`, `Scheme`, `Expires`, and `Ticket`.
+- **Functionality:** Inserts a new session record with the provided data and sets the `Created` and `Renewed` timestamps to the current date and time.
+
+## Stored Procedure to Retrieve Data by Key (`sp_get_user_session`)
 
 ```sql
 -- Drop the stored procedure if it already exists
@@ -82,6 +103,46 @@ BEGIN
 END
 GO
 ```
+
+### Explanation
+- **Parameter:** `Key` to identify the session.
+- **Functionality:** Retrieves the session record corresponding to the provided `Key`.
+
+## Stored Procedure to Retrieve Data by SubjectId or SessionId (`sp_get_user_session_by_subject_or_session`)
+
+```sql
+-- Drop the stored procedure if it already exists
+IF OBJECT_ID('dbo.sp_get_user_session_by_subject_or_session', 'P') IS NOT NULL
+BEGIN
+    DROP PROCEDURE dbo.sp_get_user_session_by_subject_or_session;
+END
+GO
+
+-- Create the stored procedure
+CREATE PROCEDURE dbo.sp_get_user_session_by_subject_or_session
+    @SubjectId NVARCHAR(255) = NULL,
+    @SessionId NVARCHAR(255) = NULL
+AS
+BEGIN
+    -- Set NOCOUNT to ON to prevent the message indicating the number of rows affected
+    SET NOCOUNT ON;
+
+    -- Select the session record from tbl_online_user_sessions based on SubjectId or SessionId
+    SELECT [Key], SubjectId, SessionId, Scheme, Created, Renewed, Expires, Ticket
+    FROM dbo.tbl_online_user_sessions
+    WHERE 
+        (@SubjectId IS NULL OR SubjectId = @SubjectId) AND
+        (@SessionId IS NULL OR SessionId = @SessionId);
+
+    -- Print a message indicating the retrieval process
+    PRINT 'Filtered session records have been retrieved from tbl_online_user_sessions';
+END
+GO
+```
+
+### Explanation
+- **Parameters:** `SubjectId` and `SessionId`, both optional.
+- **Functionality:** Retrieves session records filtered by `SubjectId`, `SessionId`, or both.
 
 ## Stored Procedure to Delete Data (`sp_delete_user_session`)
 
@@ -119,6 +180,10 @@ BEGIN
 END
 GO
 ```
+
+### Explanation
+- **Parameter:** `Key` to identify the session.
+- **Functionality:** Deletes the session record corresponding to the provided `Key`. Prints a message indicating whether the deletion was successful or if no record was found.
 
 ## Stored Procedure to Update Data (`sp_update_user_session`)
 
@@ -163,9 +228,13 @@ END
 GO
 ```
 
-### Usage Examples
+### Explanation
+- **Parameters:** `Key`, `Expires`, and `Ticket`.
+- **Functionality:** Updates the `Renewed`, `Expires`, and `Ticket` columns for the session record corresponding to the provided `Key`.
 
-#### Insert a record
+## Usage Examples
+
+### Insert a Record
 
 ```sql
 EXEC dbo.sp_create_user_session 
@@ -177,23 +246,48 @@ EXEC dbo.sp_create_user_session
     @Ticket = 'your_ticket';
 ```
 
-#### Retrieve a record
+### Retrieve a Record by Key
 
 ```sql
 EXEC dbo.sp_get_user_session @Key = 'your_key';
 ```
 
-#### Delete a record
+### Retrieve Records by SubjectId or SessionId
+
+```sql
+EXEC dbo.sp_get_user_session_by_subject_or_session @SubjectId = 'your_subject_id';
+```
+
+```sql
+EXEC dbo.sp_get_user_session_by_subject_or_session @SessionId = 'your_session_id';
+```
+
+```sql
+EXEC dbo.sp_get_user_session_by_subject_or_session @SubjectId = 'your_subject_id', @SessionId = 'your_session_id';
+```
+
+### Delete a Record
 
 ```sql
 EXEC dbo.sp_delete_user_session @Key = 'your_key';
 ```
 
-#### Update a record
+### Update a Record
+
+```sql
+EXEC dbo.sp_update_user_session
+
+```markdown
+### Update a Record
 
 ```sql
 EXEC dbo.sp_update_user_session 
     @Key = 'your_key', 
     @Expires = '2024-12-31 23:59:59', 
     @Ticket = 'new_ticket';
+```
+
+## Conclusion
+
+This document outlines the SQL scripts necessary for creating a table to store user session data and the stored procedures to manage these sessions. The procedures cover insertion, retrieval by key, retrieval by `SubjectId` or `SessionId`, deletion, and updating specific fields of a session record. Each script includes explanations to aid in understanding their functionality and usage.
 ```
