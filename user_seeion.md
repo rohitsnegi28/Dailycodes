@@ -1,7 +1,6 @@
-Certainly! Below are the updated stored procedures to work with the new schema of `tbl_online_user_sessions` which includes columns `Key`, `SubjectId`, `SessionId`, `Scheme`, `Created`, `Renewed`, `Expires`, and `Ticket`.
+Certainly! Here are all the SQL queries and stored procedures formatted for an `md` (Markdown) file.
 
-### 1. Create the Table
-First, create the table with the updated schema:
+## Create Table
 
 ```sql
 -- Drop the table if it already exists
@@ -25,8 +24,7 @@ CREATE TABLE dbo.tbl_online_user_sessions (
 GO
 ```
 
-### 2. Stored Procedure to Insert Data (`sp_create_user_session`)
-Next, create a stored procedure to insert data into the table:
+## Stored Procedure to Insert Data (`sp_create_user_session`)
 
 ```sql
 -- Drop the stored procedure if it already exists
@@ -59,8 +57,7 @@ END
 GO
 ```
 
-### 3. Stored Procedure to Retrieve Data (`sp_get_user_session`)
-Next, create a stored procedure to retrieve data based on the `Key`:
+## Stored Procedure to Retrieve Data (`sp_get_user_session`)
 
 ```sql
 -- Drop the stored procedure if it already exists
@@ -86,8 +83,7 @@ END
 GO
 ```
 
-### 4. Stored Procedure to Delete Data (`sp_delete_user_session`)
-Finally, create a stored procedure to delete data based on the `Key`:
+## Stored Procedure to Delete Data (`sp_delete_user_session`)
 
 ```sql
 -- Drop the stored procedure if it already exists
@@ -124,26 +120,80 @@ END
 GO
 ```
 
-### Summary
-With these scripts, you can manage user session data in the `tbl_online_user_sessions` table by inserting, retrieving, and deleting records based on the `Key`. Here’s how you can execute each stored procedure:
+## Stored Procedure to Update Data (`sp_update_user_session`)
 
-- **Insert a record:**
-  ```sql
-  EXEC dbo.sp_create_user_session 
-      @Key = 'your_key', 
-      @SubjectId = 'subject_id', 
-      @SessionId = 'session_id', 
-      @Scheme = 'scheme', 
-      @Expires = '2024-12-31 23:59:59', 
-      @Ticket = 'your_ticket';
-  ```
+```sql
+-- Drop the stored procedure if it already exists
+IF OBJECT_ID('dbo.sp_update_user_session', 'P') IS NOT NULL
+BEGIN
+    DROP PROCEDURE dbo.sp_update_user_session;
+END
+GO
 
-- **Retrieve a record:**
-  ```sql
-  EXEC dbo.sp_get_user_session @Key = 'your_key';
-  ```
+-- Create the stored procedure
+CREATE PROCEDURE dbo.sp_update_user_session
+    @Key NVARCHAR(255),
+    @Expires DATETIME NULL,
+    @Ticket NVARCHAR(MAX)
+AS
+BEGIN
+    -- Set NOCOUNT to ON to prevent the message indicating the number of rows affected
+    SET NOCOUNT ON;
 
-- **Delete a record:**
-  ```sql
-  EXEC dbo.sp_delete_user_session @Key = 'your_key';
-  ```
+    -- Update the Renewed, Expires, and Ticket columns in tbl_online_user_sessions based on the Key
+    UPDATE dbo.tbl_online_user_sessions
+    SET
+        Renewed = GETDATE(),  -- Update the Renewed column to the current date and time
+        Expires = @Expires,
+        Ticket = @Ticket
+    WHERE [Key] = @Key;
+
+    -- Check if any rows were affected by the update operation
+    IF @@ROWCOUNT > 0
+    BEGIN
+        -- Print a message indicating the session record has been updated
+        PRINT 'Session record with Key ' + @Key + ' has been updated.';
+    END
+    ELSE
+    BEGIN
+        -- Print a message indicating no session record was found for the provided Key
+        PRINT 'No session record found with Key ' + @Key + '.';
+    END
+END
+GO
+```
+
+### Usage Examples
+
+#### Insert a record
+
+```sql
+EXEC dbo.sp_create_user_session 
+    @Key = 'your_key', 
+    @SubjectId = 'subject_id', 
+    @SessionId = 'session_id', 
+    @Scheme = 'scheme', 
+    @Expires = '2024-12-31 23:59:59', 
+    @Ticket = 'your_ticket';
+```
+
+#### Retrieve a record
+
+```sql
+EXEC dbo.sp_get_user_session @Key = 'your_key';
+```
+
+#### Delete a record
+
+```sql
+EXEC dbo.sp_delete_user_session @Key = 'your_key';
+```
+
+#### Update a record
+
+```sql
+EXEC dbo.sp_update_user_session 
+    @Key = 'your_key', 
+    @Expires = '2024-12-31 23:59:59', 
+    @Ticket = 'new_ticket';
+```
