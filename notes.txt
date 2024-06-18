@@ -1,0 +1,3 @@
+The issue of receiving “[object Object]” occurred because the return type was changed to include an HTML element, and JavaScript string interpolation (${function}) was attempting to convert the object to a string, resulting in “[object Object]”. By returning the value as an HTML element with JSX syntax (<>{function}</>), we prevented this conversion issue and ensured correct rendering.
+
+This change in return type needed to be addressed in every location where the formatWithSymbolNumber function is called.
