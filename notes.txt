@@ -1,1 +1,15 @@
-The issue occurred on the Field Force General page, which includes a filter section where users can add multiple rows of criteria, specifying column names, operators, and values for a search. After setting the filter criteria, users can click the search button to fetch records with pagination and use the export button to export records without pagination based on the filter criteria. The problem arose when users added two or more rows in the filter criteria and left the value field empty for the second or subsequent rows. This led to an error in forming the payload for the export API. The root cause was traced back to a merge conflict during the transition from version R8.1 to R9.1 of the codebase. This conflict was not handled properly, resulting in the incorrect formation of the export payload when certain filter criteria were used, specifically when some rows lacked specified values.
+Got it. Based on the context, here's a revised version that incorporates the details about the three grids:
+
+---
+
+Hi @Indranil Goswami,
+
+This defect is fixed and deployed in the environment with the Pull request [https://github.com/manulife-ca/fasat-cdtccr-fasat-ui/pull/7304](https://github.com/manulife-ca/fasat-cdtccr-fasat-ui/pull/7304).
+
+Bug type: UI Coding issue
+
+Detailed analysis: On our page, we have three grids: Rate Key Grid (master grid), Rate Detail Grid, and Rate Participant Grid. Upon selecting data from the Rate Key Grid, the other two grids get populated accordingly. Initially, when selecting a participant for Row 1 from the Rate Key Grid, the participant grid was updated correctly. However, when selecting Row 2 from the Rate Key Grid and adding a participant, the participant grid should reflect the new participant for Row 2. Due to a coding issue, the grid was incorrectly fetching data for Row 1 instead of Row 2. This issue has now been resolved.
+
+---
+
+This version includes the context about the three grids and explains the defect and its resolution more clearly.
