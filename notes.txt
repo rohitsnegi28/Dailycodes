@@ -1,7 +1,0 @@
-We have identified the root cause of the issue and fixed it in the local branch. We will deploy the fix once the environment is ready for the CDT_2024_FASATMOD_10th Aug release.
-
-Root cause: UI coding issue.
-
-Details: When a user clicks the “Reverse and Reprocess” button, the system first calls an API to check for concurrency. Based on the response, it then opens the confirmation modal for Reverse and Reprocess. This concurrency API response is stored in the Redux state.
-
-The issue occurs when the user processes the Reverse and Reprocess (RR) for the first time, navigates to the Job status screen, and then returns to the AP screen using the browser’s back button. In this scenario, the AP RR confirmation modal is reopening because it retrieves the previously stored concurrency response from the Redux store.
