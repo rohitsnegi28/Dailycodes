@@ -89,3 +89,88 @@ To show an alert message when the user tries to navigate away from the page usin
    ```
 
 This setup ensures that the user gets a prompt when trying to leave the page and is redirected to the home page if they attempt to go back. Note that browser behavior may vary, and some browsers might not show custom messages in the confirmation dialog.
+
+
+
+To handle this in your root file (e.g., `App.js` or `index.js`), you can set up global event listeners for navigation changes and use the `react-router-dom`'s `BrowserRouter` for routing. Here’s how you can do it:
+
+1. **Set Up Your Root File:**
+
+   In your root file, set up the global event listener for `beforeunload` to prompt users when they try to leave the page. For handling navigation within the app, you'll use the `useNavigate` hook to redirect users.
+
+   Here's an example using `App.js`:
+
+   ```jsx
+   // App.js
+   import React, { useEffect } from 'react';
+   import { BrowserRouter as Router, Routes, Route, useNavigate } from 'react-router-dom';
+
+   // Define your components
+   const Home = () => <div>Home Page</div>;
+   const MyComponent = () => <div>My Component Page</div>;
+
+   const App = () => {
+     const navigate = useNavigate();
+
+     useEffect(() => {
+       const handleBeforeUnload = (e) => {
+         // Display a confirmation dialog
+         e.preventDefault();
+         e.returnValue = ''; // Required for some browsers
+       };
+
+       const handlePopState = () => {
+         // Show an alert message and redirect to home page
+         alert('You have unsaved changes. Redirecting to home page.');
+         navigate('/');
+       };
+
+       window.addEventListener('beforeunload', handleBeforeUnload);
+       window.addEventListener('popstate', handlePopState);
+
+       return () => {
+         window.removeEventListener('beforeunload', handleBeforeUnload);
+         window.removeEventListener('popstate', handlePopState);
+       };
+     }, [navigate]);
+
+     return (
+       <Router>
+         <Routes>
+           <Route path="/" element={<Home />} />
+           <Route path="/my-component" element={<MyComponent />} />
+         </Routes>
+       </Router>
+     );
+   };
+
+   export default App;
+   ```
+
+2. **Ensure Your `index.js` is Set Up:**
+
+   Make sure your `index.js` file renders the `App` component:
+
+   ```jsx
+   // index.js
+   import React from 'react';
+   import ReactDOM from 'react-dom';
+   import App from './App';
+
+   ReactDOM.render(
+     <React.StrictMode>
+       <App />
+     </React.StrictMode>,
+     document.getElementById('root')
+   );
+   ```
+
+**Important Notes:**
+
+- **Browser Behavior:** The `beforeunload` event is used to prompt users when they try to leave the page (e.g., by closing the tab or navigating to a different site). This does not apply to navigation within the single-page application (SPA) handled by `react-router-dom`.
+  
+- **Popstate Event:** The `popstate` event is fired when the active history entry changes. This handles back/forward navigation but may not always be reliable for showing alerts or performing actions before navigating away.
+
+By placing the event listeners in the root file, you ensure that they are active throughout the lifecycle of your app.
+
+
