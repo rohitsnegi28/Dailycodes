@@ -174,3 +174,48 @@ To handle this in your root file (e.g., `App.js` or `index.js`), you can set up 
 By placing the event listeners in the root file, you ensure that they are active throughout the lifecycle of your app.
 
 
+
+
+
+
+
+
+
+import React, { useEffect } from 'react';
+
+const App = () => {
+  useEffect(() => {
+    // Function to be called when the user tries to navigate away
+    const handleBeforeUnload = (event) => {
+      // Set a custom message (not always supported by browsers)
+      const message = "Are you sure you want to leave this page?";
+      event.returnValue = message; // Standard for most browsers
+      return message; // For older browsers
+    };
+
+    // Add event listener
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    // Cleanup the event listener on component unmount
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);
+
+  return (
+    <div>
+      {/* Your app content here */}
+      <h1>Your Application</h1>
+    </div>
+  );
+};
+
+export default App;
+
+
+
+
+
+
+
+
