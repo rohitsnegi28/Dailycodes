@@ -1,3 +1,5 @@
+Here’s a well-formatted guide for resolving the regeneratorRuntime is not defined issue in a React Vite project. This document explains why the solution is necessary and provides step-by-step instructions to fix the issue.
+
 Resolving regeneratorRuntime is not defined in a React Vite Project
 
 Issue Overview
