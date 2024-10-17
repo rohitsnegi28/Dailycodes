@@ -1,4 +1,4 @@
-Here’s a Bash script that renames all .js files to .jsx inside the src folder, excluding any test files (e.g., files ending with .test.js):
+if Here’s a Bash script that renames all .js files to .jsx inside the src folder, excluding any test files (e.g., files ending with .test.js):
 
 	1.	Create a Bash script (e.g., rename-files.sh) in the root of your project with the following content:
 
@@ -7,14 +7,22 @@ Here’s a Bash script that renames all .js files to .jsx inside the src folder,
 # Directory to search for files
 SRC_DIR="./src"
 
-# Find all .js files, excluding .test.js files, and rename them to .jsx
-find "$SRC_DIR" -type f -name "*.js" ! -name "*.test.js" | while read -r FILE; do
+# Find all .js files, excluding .test.js files, and rename them to .#!/bin/bash
+
+# Directory to search for files
+SRC_DIR="./src"
+
+# Find all .js files and rename them to .jsx
+find "$SRC_DIR" -type f -name "*.js" | while read -r FILE; do
     NEW_FILE="${FILE%.js}.jsx"
     mv "$FILE" "$NEW_FILE"
     echo "Renamed: $FILE -> $NEW_FILE"
 done
 
 echo "Renaming completed."
+
+
+
 
 
 	2.	Make the script executable:
