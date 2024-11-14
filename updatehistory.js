@@ -19,23 +19,7 @@ function replaceHistoryPush(content) {
   let modifiedContent = content;
 
   // Patterns to match and replace different history.push styles
-  const patterns = [
-    // Dynamic path variable: history.push(dynamicPath)
-    {
-      regex: /history\.push\s*\(\s*([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*)\s*\)/g,
-      replacement: 'history($1)'
-    },
-    
-    // Dynamic path with state: history.push(dynamicPath, state)
-    {
-      regex: /history\.push\s*\(\s*([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*)\s*,\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\)/g,
-      replacement: 'history($1, { state: $2 })'
-    },
-
-    // Multiline object pattern with pathname and state
-    {
-      regex: /history\.push\s*\(\s*{\s*\n?\s*pathname\s*:\s*((['"`])[^'"`]+\2|[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*)\s*,?\s*\n?\s*(?:state\s*:\s*({[^}]+}|[a-zA-Z][a-zA-Z0-9_]*))?\s*\n?\s*}\s*\)/g,
-      replacement: (match, pathname, quote, state) => {
+  h, pathname, quote, state) => {
         if (state) {
           return `history(${pathname}, { state: ${state} })`;
         }
@@ -43,66 +27,68 @@ function replaceHistoryPush(content) {
       }
     },
 
-    // Direct state passing: history.push('/', state)
-    {
-      regex: /history\.push\s*\(\s*(['"`][^'"`]+['"`])\s*,\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\)/g,
-      replacement: 'history($1, { state: $2 })'
-    },
-    
-    // Simple path: history.push('/path')
-    {
-      regex: /history\.push\s*\(\s*((['"`])[^'"`]+\2)\s*\)/g,
-      replacement: 'history($1)'
-    },
-    
-    // Object with pathname only
-    {
-      regex: /history\.push\s*\(\s*{\s*pathname:\s*((['"`])[^'"`]+\2|[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*)\s*}\s*\)/g,
-      replacement: 'history($1)'
-    },
-    
-    // Object with pathname and state (single line)
-    {
-      regex: /history\.push\s*\(\s*{\s*pathname:\s*((['"`])[^'"`]+\2|[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*)\s*,\s*state:\s*({[^}]+}|[a-zA-Z][a-zA-Z0-9_]*)\s*}\s*\)/g,
-      replacement: 'history($1, { state: $3 })'
-    },
-    
-    // Object with pathname, search/query and state
-    {
-      regex: /history\.push\s*\(\s*{\s*pathname:\s*((['"`])[^'"`]+\2|[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*)\s*,\s*(?:search|query):\s*((['"`])[^'"`]+\4)\s*,\s*state:\s*({[^}]+}|[a-zA-Z][a-zA-Z0-9_]*)\s*}\s*\)/g,
-      replacement: 'history({ pathname: $1, search: $3 }, { state: $5 })'
-    },
-    
-    // Replace with search/query but no state
-    {
-      regex: /history\.push\s*\(\s*{\s*pathname:\s*((['"`])[^'"`]+\2|[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*)\s*,\s*(?:search|query):\s*((['"`])[^'"`]+\4)\s*}\s*\)/g,
-      replacement: 'history({ pathname: $1, search: $3 })'
-    },
-    
-    // Replace variants
-    {
-      regex: /history\.replace\s*\(\s*((['"`])[^'"`]+\2|[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*)\s*\)/g,
-      replacement: 'history($1, { replace: true })'
-    },
-    
-    // Replace with state
-    {
-      regex: /history\.replace\s*\(\s*((['"`])[^'"`]+\2|[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*)\s*,\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\)/g,
-      replacement: 'history($1, { replace: true, state: $3 })'
-    },
-    
-    // Replace with object
-    {
-      regex: /history\.replace\s*\(\s*{\s*pathname:\s*((['"`])[^'"`]+\2|[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*)\s*}\s*\)/g,
-      replacement: 'history($1, { replace: true })'
-    },
-    
-    // Replace with pathname and state
-    {
-      regex: /history\.replace\s*\(\s*{\s*pathname:\s*((['"`])[^'"`]+\2|[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*)\s*,\s*state:\s*({[^}]+}|[a-zA-Z][a-zA-Z0-9_]*)\s*}\s*\)/g,
-      replacement: 'history($1, { replace: true, state: $3 })'
-    }
-  ];
+const patterns = [
+  // Direct state passing with extra spaces: history.push('path', state) -> history('path', { state })
+  {
+    regex: /history\.push\s*\(\s*(['"`][^'"`]+['"`])\s*,\s*([a-zA-Z][a-zA-Z0-9]*)\s*\)/g,
+    replacement: 'history($1, { state: $2 })'
+  },
+  
+  // Simple path with spaces: history.push('/path') -> history('/path')
+  {
+    regex: /history\.push\s*\(\s*((['"`])[^'"`]+\2)\s*\)/g,
+    replacement: 'history($1)'
+  },
+  
+  // Object with pathname only, with extra spaces
+  {
+    regex: /history\.push\s*\(\s*{\s*pathname\s*:\s*((['"`])[^'"`]+\2)\s*}\s*\)/g,
+    replacement: 'history($1)'
+  },
+  
+  // Object with pathname and state, with extra spaces
+  {
+    regex: /history\.push\s*\(\s*{\s*pathname\s*:\s*((['"`])[^'"`]+\2)\s*,\s*state\s*:\s*({[^}]+}|[a-zA-Z][a-zA-Z0-9]*)\s*}\s*\)/g,
+    replacement: 'history($1, { state: $3 })'
+  },
+  
+  // Object with pathname, search/query, and state, with extra spaces
+  {
+    regex: /history\.push\s*\(\s*{\s*pathname\s*:\s*((['"`])[^'"`]+\2)\s*,\s*(?:search|query)\s*:\s*((['"`])[^'"`]+\4)\s*,\s*state\s*:\s*({[^}]+}|[a-zA-Z][a-zA-Z0-9]*)\s*}\s*\)/g,
+    replacement: 'history({ pathname: $1, search: $3 }, { state: $5 })'
+  },
+  
+  // Replace with search/query but no state, with extra spaces
+  {
+    regex: /history\.push\s*\(\s*{\s*pathname\s*:\s*((['"`])[^'"`]+\2)\s*,\s*(?:search|query)\s*:\s*((['"`])[^'"`]+\4)\s*}\s*\)/g,
+    replacement: 'history({ pathname: $1, search: $3 })'
+  },
+  
+  // Replace call with a simple path
+  {
+    regex: /history\.replace\s*\(\s*((['"`])[^'"`]+\2)\s*\)/g,
+    replacement: 'history($1, { replace: true })'
+  },
+  
+  // Replace with state, handling extra spaces
+  {
+    regex: /history\.replace\s*\(\s*((['"`])[^'"`]+\2)\s*,\s*([a-zA-Z][a-zA-Z0-9]*)\s*\)/g,
+    replacement: 'history($1, { replace: true, state: $3 })'
+  },
+  
+  // Replace with pathname object, handling extra spaces
+  {
+    regex: /history\.replace\s*\(\s*{\s*pathname\s*:\s*((['"`])[^'"`]+\2)\s*}\s*\)/g,
+    replacement: 'history($1, { replace: true })'
+  },
+  
+  // Replace with pathname and state object, handling extra spaces
+  {
+    regex: /history\.replace\s*\(\s*{\s*pathname\s*:\s*((['"`])[^'"`]+\2)\s*,\s*state\s*:\s*({[^}]+}|[a-zA-Z][a-zA-Z0-9]*)\s*}\s*\)/g,
+    replacement: 'history($1, { replace: true, state: $3 })'
+  }
+];
+
 
   // Apply each replacement pattern
   patterns.forEach(({ regex, replacement }) => {
