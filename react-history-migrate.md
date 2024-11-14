@@ -1,73 +1,331 @@
-Here’s a simplified and cleaner version you can try copying directly. You may want to format it further after pasting into GitHub.
+# React Router History Migration Script
 
-React Router v6 Migration Script for history.push Syntax
+This script helps you migrate from the deprecated `history.push()` to the new navigation system in React Router v6. It automatically updates your codebase while maintaining functionality and creating backups of modified files.
 
-This script helps migrate from React Router v5 syntax to v6 by updating history.push calls across your project. The migration changes history.push to the new useNavigate syntax, simplifying your transition to React Router v6.
+## Features
 
-Prerequisites
+- ✨ Converts all `history.push` and `history.replace` patterns to the new format
+- 🔍 Handles various navigation patterns including pathname, state, and search params
+- 🎨 Normalizes spacing and formatting
+- 💾 Creates backups of modified files
+- 🚫 Skips node_modules, build, and dist directories
+- 📝 Shows preview of changes
 
-	•	Node.js installed.
-	•	Backup your project before running the script to avoid unintended changes.
+## Installation
 
-Instructions
+1. Create a new file named `replace-history-push.js` in your project root
+2. Copy the script content below
+3. Ensure you have Node.js installed
 
-Step 1: Save the Script
+## Script
 
-Save this script in your project root directory as migrateHistoryPush.js:
-
+```javascript
 const fs = require('fs');
 const path = require('path');
 
-// Specify the root directory of your project
-const projectRoot = './src'; // Update to your project's source folder
+// Configuration
+const extensions = ['.js', '.jsx', '.ts', '.tsx'];
+const excludedDirs = ['node_modules', 'build', 'dist'];
 
-// Regex to match `history.push({ pathname: '...', state: { ... } })`
-const historyPushRegex = /history\.push\(\s*\{\s*pathname:\s*['"`](.*?)['"`]\s*,\s*state:\s*(\{.*?\})\s*\}\s*\)/g;
+function normalizeSpaces(str) {
+  // Normalize spaces around brackets and commas
+  return str
+    .replace(/\s*\(\s*/g, '(')
+    .replace(/\s*\)\s*/g, ')')
+    .replace(/\s*,\s*/g, ', ')
+    .replace(/{\s+/g, '{ ')
+    .replace(/\s+}/g, ' }');
+}
 
-// Function to read files in a directory
-function readFilesRecursively(directory) {
-  const files = fs.readdirSync(directory);
+function replaceHistoryPush(content) {
+  let modifiedContent = content;
+
+  // Patterns to match and replace different history.push styles
+  const patterns = [
+    // Direct state passing: history.push('/', state) -> history('/', { state })
+    {
+      regex: /history\.push\s*\(\s*(['"`][^'"`]+['"`])\s*,\s*([a-zA-Z][a-zA-Z0-9]*)\s*\)/g,
+      replacement: 'history($1, { state: $2 })'
+    },
+    
+    // Simple path: history.push('/path') -> history('/path')
+    {
+      regex: /history\.push\s*\(\s*((['"`])[^'"`]+\2)\s*\)/g,
+      replacement: 'history($1)'
+    },
+    
+    // Object with pathname only
+    {
+      regex: /history\.push\s*\(\s*{\s*pathname:\s*((['"`])[^'"`]+\2)\s*}\s*\)/g,
+      replacement: 'history($1)'
+    },
+    
+    // Object with pathname and state
+    {
+      regex: /history\.push\s*\(\s*{\s*pathname:\s*((['"`])[^'"`]+\2)\s*,\s*state:\s*({[^}]+}|[a-zA-Z][a-zA-Z0-9]*)\s*}\s*\)/g,
+      replacement: 'history($1, { state: $3 })'
+    },
+    
+    // Object with pathname, search/query and state
+    {
+      regex: /history\.push\s*\(\s*{\s*pathname:\s*((['"`])[^'"`]+\2)\s*,\s*(?:search|query):\s*((['"`])[^'"`]+\4)\s*,\s*state:\s*({[^}]+}|[a-zA-Z][a-zA-Z0-9]*)\s*}\s*\)/g,
+      replacement: 'history({ pathname: $1, search: $3 }, { state: $5 })'
+    },
+    
+    // Replace with search/query but no state
+    {
+      regex: /history\.push\s*\(\s*{\s*pathname:\s*((['"`])[^'"`]+\2)\s*,\s*(?:search|query):\s*((['"`])[^'"`]+\4)\s*}\s*\)/g,
+      replacement: 'history({ pathname: $1, search: $3 })'
+    },
+    
+    // Replace variants
+    {
+      regex: /history\.replace\s*\(\s*((['"`])[^'"`]+\2)\s*\)/g,
+      replacement: 'history($1, { replace: true })'
+    },
+    
+    // Replace with state
+    {
+      regex: /history\.replace\s*\(\s*((['"`])[^'"`]+\2)\s*,\s*([a-zA-Z][a-zA-Z0-9]*)\s*\)/g,
+      replacement: 'history($1, { replace: true, state: $3 })'
+    },
+    
+    // Replace with object
+    {
+      regex: /history\.replace\s*\(\s*{\s*pathname:\s*((['"`])[^'"`]+\2)\s*}\s*\)/g,
+      replacement: 'history($1, { replace: true })'
+    },
+    
+    // Replace with pathname and state
+    {
+      regex: /history\.replace\s*\(\s*{\s*pathname:\s*((['"`])[^'"`]+\2)\s*,\s*state:\s*({[^}]+}|[a-zA-Z][a-zA-Z0-9]*)\s*}\s*\)/g,
+      replacement: 'history($1, { replace: true, state: $3 })'
+    }
+  ];
+
+  // Apply each replacement pattern
+  patterns.forEach(({ regex, replacement }) => {
+    modifiedContent = modifiedContent.replace(regex, (match, ...args) => {
+      const replaced = match.replace(regex, replacement);
+      return normalizeSpaces(replaced);
+    });
+  });
+
+  return modifiedContent;
+}
+
+function processFile(filePath) {
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    const modifiedContent = replaceHistoryPush(content);
+
+    if (content !== modifiedContent) {
+      // Print a diff-like preview of changes
+      console.log(`\n✅ Updating: ${filePath}`);
+      const lines = content.split('\n');
+      const newLines = modifiedContent.split('\n');
+      lines.forEach((line, i) => {
+        if (line !== newLines[i] && (line.includes('history.push') || line.includes('history.replace'))) {
+          console.log('  - ' + line.trim());
+          console.log('  + ' + newLines[i].trim());
+        }
+      });
+
+      // Create backup of original file
+      fs.writeFileSync(`${filePath}.backup`, content);
+      // Write modified content
+      fs.writeFileSync(filePath, modifiedContent);
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.error(`❌ Error processing ${filePath}:`, error);
+    return false;
+  }
+}
+
+function walkDir(dir) {
+  let changes = 0;
+  const files = fs.readdirSync(dir);
+
   files.forEach(file => {
-    const filePath = path.join(directory, file);
+    const filePath = path.join(dir, file);
     const stat = fs.statSync(filePath);
 
     if (stat.isDirectory()) {
-      readFilesRecursively(filePath);
-    } else if (stat.isFile() && (file.endsWith('.js') || file.endsWith('.jsx'))) {
-      let fileContent = fs.readFileSync(filePath, 'utf8');
-
-      fileContent = fileContent.replace(historyPushRegex, (match, pathname, state) => {
-        return `history('${pathname}', { state: ${state} })`;
-      });
-
-      fs.writeFileSync(filePath, fileContent, 'utf8');
-      console.log(`Updated: ${filePath}`);
+      if (!excludedDirs.includes(file)) {
+        changes += walkDir(filePath);
+      }
+    } else if (stat.isFile() && extensions.includes(path.extname(file))) {
+      if (processFile(filePath)) {
+        changes++;
+      }
     }
   });
+
+  return changes;
 }
 
-// Run the script
-readFilesRecursively(projectRoot);
-console.log('Migration completed.');
+// Main execution
+function main() {
+  const srcDir = process.argv[2] || './src';
+  
+  if (!fs.existsSync(srcDir)) {
+    console.error(`❌ Directory not found: ${srcDir}`);
+    process.exit(1);
+  }
 
-Step 2: Run the Script
+  console.log(`🔍 Starting search in ${srcDir}`);
+  console.log('📝 Will handle the following patterns:');
+  console.log('  - history.push("/path")');
+  console.log('  - history.push("/path", state)');
+  console.log('  - history.push({ pathname: "/path" })');
+  console.log('  - history.push({ pathname: "/path", state: {...} })');
+  console.log('  - history.push({ pathname: "/path", search: "?query", state: {...} })');
+  console.log('  - history.replace(...) variants\n');
+  
+  const changesCount = walkDir(srcDir);
+  console.log(`\n✨ Complete! Made changes in ${changesCount} files.`);
+  console.log('📝 Backup files created with .backup extension');
+}
 
-	1.	Navigate to your project root where migrateHistoryPush.js is saved.
-	2.	Run the script using Node.js:
+main();
+```
 
-node migrateHistoryPush.js
+## Usage
 
+Run the script using Node.js:
 
+```bash
+node replace-history-push.js ./src
+```
 
-Step 3: Verify Changes
+Replace `./src` with the path to your source directory if different.
 
-After running, review modified files to ensure correctness. You can use Git to see a diff:
+## Supported Patterns
 
-git diff
+### Basic Navigation
 
-Important Notes
+```javascript
+// Before
+history.push('/path')
 
-	•	Supported Files: Only processes .js and .jsx files.
-	•	Customization: Update projectRoot in the script if your source folder differs.
+// After
+history('/path')
+```
 
-This should now be easier to copy and paste. Let me know if this version works for you!
+### Navigation with State
+
+```javascript
+// Before
+history.push('/', state)
+
+// After
+history('/', { state: state })
+```
+
+### Object Pattern
+
+```javascript
+// Before
+history.push({ pathname: '/path' })
+
+// After
+history('/path')
+```
+
+### Object with State
+
+```javascript
+// Before
+history.push({ 
+  pathname: '/path',
+  state: { id: 1 }
+})
+
+// After
+history('/path', { 
+  state: { id: 1 }
+})
+```
+
+### With Search/Query Parameters
+
+```javascript
+// Before
+history.push({ 
+  pathname: '/path',
+  search: '?id=1',
+  state: { data: 'test' }
+})
+
+// After
+history(
+  { pathname: '/path', search: '?id=1' },
+  { state: { data: 'test' }}
+)
+```
+
+### Replace Patterns
+
+```javascript
+// Before
+history.replace('/path')
+history.replace('/path', state)
+
+// After
+history('/path', { replace: true })
+history('/path', { replace: true, state: state })
+```
+
+## Backup and Safety
+
+- The script creates `.backup` files for all modified files
+- Original files are preserved with `.backup` extension
+- You can review changes before committing them
+- The script shows a preview of changes as they're made
+
+## Preview of Changes
+
+The script will show you what changes it's making:
+
+```
+✅ Updating: src/components/Navigation.js
+  - history.push('/dashboard',state)
+  + history('/dashboard', { state: state })
+```
+
+## Error Handling
+
+- The script checks if the directory exists
+- Errors are logged with file paths
+- Process continues even if individual files fail
+- Non-JavaScript/TypeScript files are ignored
+
+## After Migration
+
+1. Review the changes in your code
+2. Test your application thoroughly
+3. Remove backup files once satisfied
+4. Update your React Router dependencies if needed
+
+## Best Practices
+
+1. Run the script on a clean git branch
+2. Review changes before committing
+3. Test thoroughly after migration
+4. Keep backup files until testing is complete
+5. Use version control for safety
+
+## Note
+
+This script is part of upgrading to React Router v6. Make sure you've updated your React Router dependencies and made other necessary changes for v6 compatibility.
+
+## Support
+
+If you encounter any issues or need additional patterns supported, you can:
+1. Check the backup files to verify changes
+2. Modify the script's regex patterns
+3. Run the script again on specific directories
+
+Remember to always backup your code before running automation scripts!
