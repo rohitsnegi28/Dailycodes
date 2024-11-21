@@ -1,116 +1,77 @@
-# Ensure SqlClient package is installed
-# Install-Package -Name Microsoft.Data.SqlClient -Force
+# Ensure Microsoft.Data.SqlClient is available
+function Ensure-SqlClient {
+    $nugetPackage = "Microsoft.Data.SqlClient"
+    $assemblyPath = Join-Path $env:USERPROFILE ".nuget\packages\$nugetPackage"
 
-# Import the SqlClient namespace
-Add-Type -Path (Get-Package Microsoft.Data.SqlClient).Source
+    if (-not (Test-Path $assemblyPath)) {
+        Write-Host "Downloading and installing $nugetPackage from NuGet..." -ForegroundColor Green
 
-# Method 1: Using Windows Authentication (Integrated Security)
-function Connect-ToSqlServerWindowsAuth {
-    param(
-        [string]$ServerName = "localhost",
-        [string]$DatabaseName = "YourDatabase"
+        # Install NuGet package
+        Install-Package -Name $nugetPackage -Source https://api.nuget.org/v3/index.json -Scope CurrentUser -Force
+
+        # Find the most recent DLL version
+        $latestVersion = Get-ChildItem -Path "$assemblyPath" | Sort-Object Name -Descending | Select-Object -First 1
+        $dllPath = Join-Path $latestVersion.FullName "lib\netstandard2.0\Microsoft.Data.SqlClient.dll"
+
+        if (-not (Test-Path $dllPath)) {
+            throw "Failed to locate the Microsoft.Data.SqlClient.dll."
+        }
+
+        return $dllPath
+    } else {
+        # Find already downloaded DLL
+        $latestVersion = Get-ChildItem -Path "$assemblyPath" | Sort-Object Name -Descending | Select-Object -First 1
+        return Join-Path $latestVersion.FullName "lib\netstandard2.0\Microsoft.Data.SqlClient.dll"
+    }
+}
+
+# Load the Microsoft.Data.SqlClient assembly
+$dllPath = Ensure-SqlClient
+Add-Type -Path $dllPath
+
+# Hardcoded connection string and SQL query
+$connectionString = "Server=your_server_name;Database=your_database_name;User Id=your_username;Password=your_password;"
+$query = "SELECT TOP 10 * FROM your_table_name;"
+
+# Function to execute a SQL query
+function Execute-SqlQuery {
+    param (
+        [string]$connectionString,
+        [string]$query
     )
 
     try {
-        # Establish connection using Windows Authentication
-        $connectionString = "Server=$ServerName;Database=$DatabaseName;Integrated Security=True;TrustServerCertificate=True;"
+        # Create a SQL connection
         $connection = New-Object Microsoft.Data.SqlClient.SqlConnection($connectionString)
-        
-        # Open the connection
         $connection.Open()
-        
-        Write-Host "Successfully connected to $ServerName/$DatabaseName using Windows Authentication" -ForegroundColor Green
-        
-        # Return the connection object for further use if needed
-        return $connection
+
+        # Create a SQL command
+        $command = $connection.CreateCommand()
+        $command.CommandText = $query
+
+        # Execute and fetch results
+        $dataAdapter = New-Object Microsoft.Data.SqlClient.SqlDataAdapter $command
+        $dataTable = New-Object System.Data.DataTable
+        $dataAdapter.Fill($dataTable)
+
+        return $dataTable
     }
     catch {
-        Write-Host "Connection failed: $_" -ForegroundColor Red
+        Write-Error "An error occurred: $_"
     }
     finally {
-        # Close connection if it's open
-        if ($connection -and $connection.State -eq 'Open') {
+        # Ensure connection is closed
+        if ($connection.State -eq [System.Data.ConnectionState]::Open) {
             $connection.Close()
         }
     }
 }
 
-# Method 2: Using SQL Server Authentication
-function Connect-ToSqlServerSqlAuth {
-    param(
-        [string]$ServerName = "localhost",
-        [string]$DatabaseName = "YourDatabase",
-        [string]$Username,
-        [securestring]$Password
-    )
+# Execute the query and display results
+$results = Execute-SqlQuery -connectionString $connectionString -query $query
 
-    try {
-        # Convert secure string to plain text for connection string
-        $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
-        $PlainPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-
-        # Establish connection using SQL Server Authentication
-        $connectionString = "Server=$ServerName;Database=$DatabaseName;User ID=$Username;Password=$PlainPassword;TrustServerCertificate=True;"
-        $connection = New-Object Microsoft.Data.SqlClient.SqlConnection($connectionString)
-        
-        # Open the connection
-        $connection.Open()
-        
-        Write-Host "Successfully connected to $ServerName/$DatabaseName using SQL Authentication" -ForegroundColor Green
-        
-        # Return the connection object for further use if needed
-        return $connection
-    }
-    catch {
-        Write-Host "Connection failed: $_" -ForegroundColor Red
-    }
-    finally {
-        # Securely clear the password from memory
-        if ($PlainPassword) {
-            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
-        }
-        
-        # Close connection if it's open
-        if ($connection -and $connection.State -eq 'Open') {
-            $connection.Close()
-        }
-    }
+if ($results.Rows.Count -gt 0) {
+    $results | Format-Table -AutoSize
+} else {
+    Write-Output "No records found."
 }
-
-# Example of executing a query
-function Invoke-SqlQuery {
-    param(
-        [Microsoft.Data.SqlClient.SqlConnection]$Connection,
-        [string]$Query
-    )
-
-    try {
-        $command = New-Object Microsoft.Data.SqlClient.SqlCommand($Query, $Connection)
-        $reader = $command.ExecuteReader()
-
-        $results = @()
-        while ($reader.Read()) {
-            $row = @{}
-            for ($i = 0; $i -lt $reader.FieldCount; $i++) {
-                $row[$reader.GetName($i)] = $reader.GetValue($i)
-            }
-            $results += $row
-        }
-
-        $reader.Close()
-        return $results
-    }
-    catch {
-        Write-Host "Query execution failed: $_" -ForegroundColor Red
-    }
-}
-
-# Example Usage for Windows Authentication
-# $windowsAuthConnection = Connect-ToSqlServerWindowsAuth -ServerName "YourServerName" -DatabaseName "YourDatabaseName"
-
-# Example Usage for SQL Authentication
-# $securePassword = ConvertTo-SecureString "YourPassword" -AsPlainText -Force
-# $sqlAuthConnection = Connect-ToSqlServerSqlAuth -ServerName "YourServerName" -DatabaseName "YourDatabaseName" -Username "YourUsername" -Password $securePassword
-
-# Example of executing a query
-# $queryResults = Invoke-SqlQuery -Connection $sqlAuthConnection -Query "SELECT * FROM YourTable"
