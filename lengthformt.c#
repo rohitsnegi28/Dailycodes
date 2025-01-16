@@ -1,201 +1,98 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Formatting;
 using System;
 using System.IO;
 using System.Linq;
-using System.Text.RegularExpressions;
-using System.Collections.Generic;
 
 class Program
 {
     static void Main(string[] args)
     {
-        string projectPath = @"C:\YourProjectPath"; // Update this path
-        ProcessDirectory(projectPath);
-    }
+        // Specify the root directory of your project
+        string directoryPath = @"C:\YourProjectDirectory"; // Replace with your project directory
 
-    static void ProcessDirectory(string path)
-    {
-        // Process all .cs files in the current directory
-        foreach (string file in Directory.GetFiles(path, "*.cs"))
+        // Iterate over all .cs files in the directory and subdirectories
+        foreach (var file in Directory.GetFiles(directoryPath, "*.cs", SearchOption.AllDirectories))
         {
-            ProcessFile(file);
-        }
+            Console.WriteLine($"Processing: {file}");
+            
+            // Read the contents of the file
+            string code = File.ReadAllText(file);
 
-        // Recursively process subdirectories
-        foreach (string dir in Directory.GetDirectories(path))
-        {
-            ProcessDirectory(dir);
-        }
-    }
+            // Parse the file into a syntax tree
+            var tree = CSharpSyntaxTree.ParseText(code);
+            var root = tree.GetRoot();
 
-    static void ProcessFile(string filePath)
-    {
-        try
-        {
-            string[] lines = File.ReadAllLines(filePath);
-            bool fileModified = false;
-            List<string> newLines = new List<string>();
+            // Split the file into lines to check for long lines
+            var lines = code.Split(new[] { Environment.NewLine }, StringSplitOptions.None);
 
-            foreach (string line in lines)
+            // Skip files that do not have any lines exceeding 200 characters
+            if (lines.All(line => line.Length <= 200))
             {
-                if (line.Length > 200)
-                {
-                    var formattedLines = FormatLongLine(line);
-                    newLines.AddRange(formattedLines);
-                    fileModified = true;
-                }
-                else
-                {
-                    newLines.Add(line);
-                }
+                Console.WriteLine($"No long lines found in: {file}");
+                continue; // Skip to the next file
             }
 
-            if (fileModified)
-            {
-                File.WriteAllLines(filePath, newLines);
-                Console.WriteLine($"Processed: {filePath}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error processing {filePath}: {ex.Message}");
+            // Use the custom rewriter to modify long lines
+            var newRoot = (CompilationUnitSyntax)new LongLineRewriter(200).Visit(root);
+
+            // Format the updated syntax tree
+            var workspace = new AdhocWorkspace();
+            var formattedCode = Formatter.Format(newRoot, workspace).ToFullString();
+
+            // Write the formatted code back to the file
+            File.WriteAllText(file, formattedCode);
+            Console.WriteLine($"Updated: {file}");
         }
     }
+}
 
-    static IEnumerable<string> FormatLongLine(string line)
+// Custom SyntaxRewriter to modify long lines safely
+class LongLineRewriter : CSharpSyntaxRewriter
+{
+    private readonly int _maxLength;
+
+    // Constructor to initialize the maximum line length
+    public LongLineRewriter(int maxLength)
     {
-        // Get the indentation level
-        string indentation = new string(' ', line.TakeWhile(c => char.IsWhiteSpace(c)).Count());
-        
-        // Handle string literals
-        if (line.Contains("\""))
-        {
-            return FormatStringLiteral(line, indentation);
-        }
-        
-        // Handle method chains
-        if (line.Contains("."))
-        {
-            return FormatMethodChain(line, indentation);
-        }
-        
-        // Handle object initializers
-        if (line.Contains("{") && line.Contains("}"))
-        {
-            return FormatObjectInitializer(line, indentation);
-        }
-
-        // Handle long parameter lists
-        if (line.Contains("(") && line.Contains(")"))
-        {
-            return FormatParameterList(line, indentation);
-        }
-
-        // Default splitting for other cases
-        return SplitLongLine(line, indentation);
+        _maxLength = maxLength;
     }
 
-    static IEnumerable<string> FormatStringLiteral(string line, string indentation)
+    public override SyntaxNode Visit(SyntaxNode node)
     {
-        var matches = Regex.Matches(line, "\"[^\"]*\"");
-        if (matches.Count > 0)
+        if (node == null)
+            return null; // Return null for null nodes (no changes)
+
+        // Get the line span and text of the current node
+        var textSpan = node.GetLocation().GetLineSpan();
+        var lineText = node.ToString();
+
+        // If the line exceeds the max length, wrap it
+        if (lineText.Length > _maxLength)
         {
-            string beforeString = line.Substring(0, matches[0].Index).Trim();
-            string afterString = line.Substring(matches[0].Index + matches[0].Length).Trim();
-            
-            yield return $"{indentation}{beforeString} @\"";
-            
-            string content = matches[0].Value.Trim('"');
-            const int maxLength = 180; // Leave room for indentation and quotes
-            
-            for (int i = 0; i < content.Length; i += maxLength)
-            {
-                string part = content.Substring(i, Math.Min(maxLength, content.Length - i));
-                if (i + maxLength < content.Length)
-                    yield return $"{indentation}    {part}\" +";
-                else
-                    yield return $"{indentation}    {part}\"";
-            }
-            
-            if (!string.IsNullOrWhiteSpace(afterString))
-            {
-                yield return $"{indentation}{afterString}";
-            }
+            // Wrap the long line into smaller chunks
+            string[] wrappedLines = WrapLine(lineText, _maxLength);
+            string wrappedCode = string.Join(Environment.NewLine, wrappedLines);
+
+            // Parse the wrapped code and return it as a new syntax node
+            return SyntaxFactory.ParseSyntaxTree(wrappedCode).GetRoot();
         }
+
+        // For nodes within the max length, return as-is
+        return base.Visit(node);
     }
 
-    static IEnumerable<string> FormatMethodChain(string line, string indentation)
+    // Helper method to wrap a long line into smaller chunks
+    private string[] WrapLine(string line, int maxLength)
     {
-        var methods = line.Split(new[] { '.' }, StringSplitOptions.RemoveEmptyEntries);
-        yield return $"{indentation}{methods[0].Trim()}";
-        
-        foreach (var method in methods.Skip(1))
-        {
-            yield return $"{indentation}    .{method.Trim()}";
-        }
-    }
+        // Break the line into chunks of the specified maximum length
+        var chunks = Enumerable.Range(0, (line.Length + maxLength - 1) / maxLength)
+                               .Select(i => line.Substring(i * maxLength, Math.Min(maxLength, line.Length - i * maxLength)))
+                               .ToArray();
 
-    static IEnumerable<string> FormatObjectInitializer(string line, string indentation)
-    {
-        int openBraceIndex = line.IndexOf("{");
-        int closeBraceIndex = line.LastIndexOf("}");
-        
-        // Split the declaration
-        string declaration = line.Substring(0, openBraceIndex).Trim();
-        string initialization = line.Substring(openBraceIndex + 1, closeBraceIndex - openBraceIndex - 1);
-        
-        yield return $"{indentation}{declaration}";
-        yield return $"{indentation}{{";
-        
-        // Split properties
-        var properties = initialization.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-        foreach (var prop in properties)
-        {
-            yield return $"{indentation}    {prop.Trim()},";
-        }
-        
-        yield return $"{indentation}}}";
-    }
-
-    static IEnumerable<string> FormatParameterList(string line, string indentation)
-    {
-        int openParenIndex = line.IndexOf("(");
-        int closeParenIndex = line.LastIndexOf(")");
-        
-        string methodName = line.Substring(0, openParenIndex).Trim();
-        string parameters = line.Substring(openParenIndex + 1, closeParenIndex - openParenIndex - 1);
-        
-        yield return $"{indentation}{methodName}(";
-        
-        var paramList = parameters.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-        foreach (var param in paramList)
-        {
-            if (param == paramList.Last())
-                yield return $"{indentation}    {param.Trim()}";
-            else
-                yield return $"{indentation}    {param.Trim()},";
-        }
-        
-        yield return $"{indentation})";
-    }
-
-    static IEnumerable<string> SplitLongLine(string line, string indentation)
-    {
-        // Default splitting at 180 characters
-        const int maxLength = 180;
-        string remainingLine = line.Trim();
-        
-        while (remainingLine.Length > maxLength)
-        {
-            int splitIndex = remainingLine.LastIndexOf(' ', maxLength);
-            if (splitIndex == -1) splitIndex = maxLength;
-            
-            yield return $"{indentation}{remainingLine.Substring(0, splitIndex)} +";
-            remainingLine = remainingLine.Substring(splitIndex).Trim();
-        }
-        
-        if (!string.IsNullOrEmpty(remainingLine))
-        {
-            yield return $"{indentation}{remainingLine}";
-        }
+        // Indent wrapped lines to preserve readability (basic implementation)
+        return chunks.Select((chunk, index) => index == 0 ? chunk : "    " + chunk.TrimStart()).ToArray();
     }
 }
