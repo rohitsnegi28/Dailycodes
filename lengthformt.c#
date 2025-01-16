@@ -1,0 +1,201 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+using System.Collections.Generic;
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        string projectPath = @"C:\YourProjectPath"; // Update this path
+        ProcessDirectory(projectPath);
+    }
+
+    static void ProcessDirectory(string path)
+    {
+        // Process all .cs files in the current directory
+        foreach (string file in Directory.GetFiles(path, "*.cs"))
+        {
+            ProcessFile(file);
+        }
+
+        // Recursively process subdirectories
+        foreach (string dir in Directory.GetDirectories(path))
+        {
+            ProcessDirectory(dir);
+        }
+    }
+
+    static void ProcessFile(string filePath)
+    {
+        try
+        {
+            string[] lines = File.ReadAllLines(filePath);
+            bool fileModified = false;
+            List<string> newLines = new List<string>();
+
+            foreach (string line in lines)
+            {
+                if (line.Length > 200)
+                {
+                    var formattedLines = FormatLongLine(line);
+                    newLines.AddRange(formattedLines);
+                    fileModified = true;
+                }
+                else
+                {
+                    newLines.Add(line);
+                }
+            }
+
+            if (fileModified)
+            {
+                File.WriteAllLines(filePath, newLines);
+                Console.WriteLine($"Processed: {filePath}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error processing {filePath}: {ex.Message}");
+        }
+    }
+
+    static IEnumerable<string> FormatLongLine(string line)
+    {
+        // Get the indentation level
+        string indentation = new string(' ', line.TakeWhile(c => char.IsWhiteSpace(c)).Count());
+        
+        // Handle string literals
+        if (line.Contains("\""))
+        {
+            return FormatStringLiteral(line, indentation);
+        }
+        
+        // Handle method chains
+        if (line.Contains("."))
+        {
+            return FormatMethodChain(line, indentation);
+        }
+        
+        // Handle object initializers
+        if (line.Contains("{") && line.Contains("}"))
+        {
+            return FormatObjectInitializer(line, indentation);
+        }
+
+        // Handle long parameter lists
+        if (line.Contains("(") && line.Contains(")"))
+        {
+            return FormatParameterList(line, indentation);
+        }
+
+        // Default splitting for other cases
+        return SplitLongLine(line, indentation);
+    }
+
+    static IEnumerable<string> FormatStringLiteral(string line, string indentation)
+    {
+        var matches = Regex.Matches(line, "\"[^\"]*\"");
+        if (matches.Count > 0)
+        {
+            string beforeString = line.Substring(0, matches[0].Index).Trim();
+            string afterString = line.Substring(matches[0].Index + matches[0].Length).Trim();
+            
+            yield return $"{indentation}{beforeString} @\"";
+            
+            string content = matches[0].Value.Trim('"');
+            const int maxLength = 180; // Leave room for indentation and quotes
+            
+            for (int i = 0; i < content.Length; i += maxLength)
+            {
+                string part = content.Substring(i, Math.Min(maxLength, content.Length - i));
+                if (i + maxLength < content.Length)
+                    yield return $"{indentation}    {part}\" +";
+                else
+                    yield return $"{indentation}    {part}\"";
+            }
+            
+            if (!string.IsNullOrWhiteSpace(afterString))
+            {
+                yield return $"{indentation}{afterString}";
+            }
+        }
+    }
+
+    static IEnumerable<string> FormatMethodChain(string line, string indentation)
+    {
+        var methods = line.Split(new[] { '.' }, StringSplitOptions.RemoveEmptyEntries);
+        yield return $"{indentation}{methods[0].Trim()}";
+        
+        foreach (var method in methods.Skip(1))
+        {
+            yield return $"{indentation}    .{method.Trim()}";
+        }
+    }
+
+    static IEnumerable<string> FormatObjectInitializer(string line, string indentation)
+    {
+        int openBraceIndex = line.IndexOf("{");
+        int closeBraceIndex = line.LastIndexOf("}");
+        
+        // Split the declaration
+        string declaration = line.Substring(0, openBraceIndex).Trim();
+        string initialization = line.Substring(openBraceIndex + 1, closeBraceIndex - openBraceIndex - 1);
+        
+        yield return $"{indentation}{declaration}";
+        yield return $"{indentation}{{";
+        
+        // Split properties
+        var properties = initialization.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+        foreach (var prop in properties)
+        {
+            yield return $"{indentation}    {prop.Trim()},";
+        }
+        
+        yield return $"{indentation}}}";
+    }
+
+    static IEnumerable<string> FormatParameterList(string line, string indentation)
+    {
+        int openParenIndex = line.IndexOf("(");
+        int closeParenIndex = line.LastIndexOf(")");
+        
+        string methodName = line.Substring(0, openParenIndex).Trim();
+        string parameters = line.Substring(openParenIndex + 1, closeParenIndex - openParenIndex - 1);
+        
+        yield return $"{indentation}{methodName}(";
+        
+        var paramList = parameters.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+        foreach (var param in paramList)
+        {
+            if (param == paramList.Last())
+                yield return $"{indentation}    {param.Trim()}";
+            else
+                yield return $"{indentation}    {param.Trim()},";
+        }
+        
+        yield return $"{indentation})";
+    }
+
+    static IEnumerable<string> SplitLongLine(string line, string indentation)
+    {
+        // Default splitting at 180 characters
+        const int maxLength = 180;
+        string remainingLine = line.Trim();
+        
+        while (remainingLine.Length > maxLength)
+        {
+            int splitIndex = remainingLine.LastIndexOf(' ', maxLength);
+            if (splitIndex == -1) splitIndex = maxLength;
+            
+            yield return $"{indentation}{remainingLine.Substring(0, splitIndex)} +";
+            remainingLine = remainingLine.Substring(splitIndex).Trim();
+        }
+        
+        if (!string.IsNullOrEmpty(remainingLine))
+        {
+            yield return $"{indentation}{remainingLine}";
+        }
+    }
+}
