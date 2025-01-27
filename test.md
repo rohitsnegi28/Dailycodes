@@ -1,68 +1,208 @@
 
-Great! Since you’re using VS Code on Windows, you can use its powerful Find and Replace with Regex feature to fix the Yup.when() syntax issues systematically across your project.
+Let's analyze the potential intermittent failure scenarios without using caching. I'll break down the most likely reasons for sporadic antiforgery token validation failures:
 
-Here’s how to proceed:
+1. Race Condition Scenarios
+   Most common reasons for intermittent failures:
+   - Token generation timing
+   - Concurrent request handling
+   - Network latency
+   - Load balancer token synchronization issues
 
-1. Open the Search Panel
+2. Detailed Diagnostic Approach
+```csharp
+public class AntiforgeryValidationMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<AntiforgeryValidationMiddleware> _logger;
 
-	•	Press Ctrl + Shift + F to open the Find in Files panel.
+    public AntiforgeryValidationMiddleware(
+        RequestDelegate next, 
+        ILogger<AntiforgeryValidationMiddleware> logger)
+    {
+        _next = next;
+        _logger = logger;
+    }
 
-2. Search for the Old when() Syntax
+    public async Task InvokeAsync(HttpContext context, IAntiforgery antiforgery)
+    {
+        try 
+        {
+            // Detailed request logging
+            _logger.LogWarning("Antiforgery Validation Attempt", new 
+            {
+                Path = context.Request.Path,
+                Method = context.Request.Method,
+                Headers = context.Request.Headers.Select(h => $"{h.Key}:{h.Value}"),
+                Cookies = context.Request.Cookies.Select(c => $"{c.Key}:{c.Value}"),
+                RequestId = context.TraceIdentifier
+            });
 
-To find all instances of the old .when() syntax, use this Regex pattern:
+            // Manual token validation with extensive logging
+            if (context.Request.Method == "POST" || context.Request.Method == "PUT")
+            {
+                try 
+                {
+                    await antiforgery.ValidateRequestAsync(context);
+                }
+                catch (Exception validationEx)
+                {
+                    _logger.LogError("Antiforgery Validation Failed", new 
+                    {
+                        ExceptionMessage = validationEx.Message,
+                        ExceptionType = validationEx.GetType().Name,
+                        StackTrace = validationEx.StackTrace,
+                        RequestHeaders = context.Request.Headers,
+                        Cookies = context.Request.Cookies
+                    });
 
-\.when\((['"][^'"]+['"])\s*,\s*\{([^}]+)\}\)
+                    // Capture detailed token information
+                    var tokens = antiforgery.GetTokens(context);
+                    _logger.LogCritical("Token Details", new 
+                    {
+                        RequestTokenLength = tokens.RequestToken?.Length,
+                        CookieTokenLength = tokens.CookieToken?.Length,
+                        HeaderTokenPresent = context.Request.Headers.ContainsKey("X-XSRF-TOKEN")
+                    });
 
-This pattern matches:
-	•	The field being used in when() (e.g., 'isShared').
-	•	The {} object containing is, then, and otherwise.
+                    throw; // Re-throw to maintain original behavior
+                }
+            }
 
-3. Replace with the New Syntax
+            await _next(context);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"Middleware Error: {ex}");
+            throw;
+        }
+    }
+}
 
-Use this as the Replace pattern:
+// Extension method to add the middleware
+public static class AntiforgeryMiddlewareExtensions
+{
+    public static IApplicationBuilder UseAntiforgeryValidationDiagnostics(this IApplicationBuilder builder)
+    {
+        return builder.UseMiddleware<AntiforgeryValidationMiddleware>();
+    }
+}
+```
 
-.when($1, ($1, schema) => $1 === 'true' ? schema.required() : schema.notRequired())
+3. Comprehensive Configuration
+```csharp
+public void ConfigureServices(IServiceCollection services)
+{
+    services.AddAntiforgery(options =>
+    {
+        // Explicit, consistent configuration
+        options.HeaderName = "X-XSRF-TOKEN";
+        options.Cookie.Name = "XSRF-TOKEN";
+        options.Cookie.HttpOnly = false;
+        options.Cookie.SameSite = SameSiteMode.Lax;
+        
+        // More robust validation
+        options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+        
+        // Custom token validation
+        options.ValidateTokenValidityPeriod = true;
+    });
 
-4. Perform a Dry Run
+    services.Configure<AntiforgeryOptions>(options =>
+    {
+        // Additional configuration
+        options.Cookie.Path = "/";
+        options.FormFieldName = "__RequestVerificationToken";
+    });
+}
 
-	•	In the search results, carefully review the matches before replacing them.
-	•	Test the replacement on a few files to ensure it works as expected.
+public void Configure(IApplicationBuilder app)
+{
+    // Add diagnostic middleware
+    app.UseAntiforgeryValidationDiagnostics();
+}
+```
 
-5. Replace in All Files
+4. Potential Intermittent Failure Reasons
+   a) Token Generation Inconsistencies
+   - Different token generation across server instances
+   - Timing-related token validation issues
+   - Partial cookie or header transmission
 
-	•	Click the Replace All button (Alt + Enter) after confirming the changes.
+   b) Network and Infrastructure Causes
+   - Load balancer token stripping
+   - Inconsistent cookie propagation
+   - SSL/TLS termination issues
 
-6. Handle Variations
+5. Detailed Troubleshooting Checklist
+   - Verify load balancer configuration
+     * Ensure cookies are fully preserved
+     * Check SSL/TLS termination settings
+   - Validate network path
+     * Consistent routing
+     * No intermediate proxies modifying requests
 
-If there are variations in how .when() is used (e.g., different field names or conditions), adjust the regex accordingly for each variation. For instance:
-	•	If conditions are more complex (e.g., is: (val) => val > 5), you might need to refine your regex or fix those cases manually.
+6. Alternative Token Generation Strategy
+```csharp
+public class CustomAntiforgeryTokenGenerator : IAntiforgeryTokenGenerator
+{
+    private readonly ILogger<CustomAntiforgeryTokenGenerator> _logger;
 
-Example: Before and After
+    public CustomAntiforgeryTokenGenerator(ILogger<CustomAntiforgeryTokenGenerator> logger)
+    {
+        _logger = logger;
+    }
 
-Before:
+    public AntiforgeryTokenSet GenerateTokens(HttpContext context)
+    {
+        try 
+        {
+            // More robust token generation
+            var requestToken = Guid.NewGuid().ToString();
+            var cookieToken = Convert.ToBase64String(Guid.NewGuid().ToByteArray());
 
-sharedWith: Yup.string()
-  .nullable()
-  .when('isShared', {
-    is: (val) => val === 'true',
-    then: Yup.string().nullable().required('FILTER_ADD_FER001_SHARED_WITH'),
-    otherwise: Yup.string().nullable().notRequired(),
-  })
+            _logger.LogInformation("Token Generation", new 
+            {
+                RequestTokenLength = requestToken.Length,
+                CookieTokenLength = cookieToken.Length,
+                GenerationTimestamp = DateTime.UtcNow
+            });
 
-After:
+            return new AntiforgeryTokenSet(
+                requestToken, 
+                cookieToken, 
+                "X-XSRF-TOKEN", 
+                "__RequestVerificationToken"
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"Token Generation Error: {ex}");
+            throw;
+        }
+    }
+}
+```
 
-sharedWith: Yup.string()
-  .nullable()
-  .when('isShared', (isShared, schema) =>
-    isShared === 'true'
-      ? schema.required('FILTER_ADD_FER001_SHARED_WITH')
-      : schema.notRequired()
-  )
+Recommended Investigation Steps:
+1. Add the comprehensive logging middleware
+2. Capture full request details during 400 errors
+3. Check server logs for:
+   - Token generation details
+   - Request routing information
+   - Any network-related anomalies
 
-7. Test Your Changes
+Critical Questions:
+1. Do the 400 errors happen:
+   - At specific times?
+   - With particular request payloads?
+   - From specific client types?
+2. Are there any network infrastructure changes recently?
+3. Can you share a sample error response or log snippet?
 
-After making replacements:
-	1.	Run your application and ensure the updated Yup validations work correctly.
-	2.	Check for edge cases or any validation rules you might have missed.
+Potential Mitigation Strategies:
+- Implement more robust logging
+- Verify load balancer configuration
+- Ensure consistent cookie handling
+- Add request tracing and correlation IDs
 
-Let me know if you need further assistance setting up or refining the process!
+Would you like me to help you dig deeper into the specific characteristics of these intermittent failures?​​​​​​​​​​​​​​​​
