@@ -1,0 +1,13 @@
+John,
+
+We have observed that Snyk is flagging instances where a property named Key is assigned a value in our unit test cases. This issue was present in multiple projects, and we were able to fix it where the count was low. However, in two specific projects, the occurrences exceed 200, making it difficult to address manually.
+
+Below are the details of the affected repositories and issue URLs:
+	•	Repository 1: [Repository Name]
+	•	Issue URL: [Insert Snyk issue link]
+	•	Repository 2: [Repository Name]
+	•	Issue URL: [Insert Snyk issue link]
+
+Since these appear to be false positives, please let us know if we should proceed with ignoring them in Snyk.
+
+Best regards,
