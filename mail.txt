@@ -7,3 +7,12 @@ npm install --save-dev \
   css-loader@5.2.7 \
   sass-loader@10.2.1 \
   file-loader@6.2.0
+
+
+npm install patch-package --save-dev
+   npx patch-package react-scripts
+
+
+"scripts": {
+     "postinstall": "patch-package"
+   }
