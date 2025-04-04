@@ -7,9 +7,8 @@ const AccessibleLoader = () => {
   const liveRegionRef = useRef(null);
   
   useEffect(() => {
-    // Create an interval that updates the live region every 10 seconds
-    const intervalId = setInterval(() => {
-      // Only announce if the component is in the DOM
+    // Function to trigger the announcement
+    const announceLoading = () => {
       if (liveRegionRef.current && document.body.contains(liveRegionRef.current)) {
         // Clear and then set the content to trigger screen readers to announce it again
         liveRegionRef.current.textContent = '';
@@ -18,15 +17,22 @@ const AccessibleLoader = () => {
           liveRegionRef.current.textContent = 'Loading';
         }, 50);
       }
-    }, 10000);
+    };
     
-    // Initial announcement when loader appears
-    if (liveRegionRef.current) {
-      liveRegionRef.current.textContent = 'Loading';
-    }
+    // Ensure immediate announcement on first render
+    // Using a small timeout to ensure the element is fully in the DOM
+    const initialTimeout = setTimeout(() => {
+      announceLoading();
+    }, 100);
     
-    // Clean up interval on unmount
-    return () => clearInterval(intervalId);
+    // Create an interval that updates the live region every 10 seconds
+    const intervalId = setInterval(announceLoading, 10000);
+    
+    // Clean up interval and timeout on unmount
+    return () => {
+      clearInterval(intervalId);
+      clearTimeout(initialTimeout);
+    };
   }, []);
   
   return (
