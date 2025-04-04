@@ -1,29 +1,49 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 // Assuming your organization's library is imported like this
 import { Spinner } from 'your-org-library';
 
-const AccessibleLoader = () => {
+const AccessibleLoader = ({ id = 'loader-' + Math.random().toString(36).substr(2, 9) }) => {
   // Reference to the live region element
   const liveRegionRef = useRef(null);
+  // Track mounted state to ensure we don't have race conditions
+  const [isMounted, setIsMounted] = useState(false);
   
   useEffect(() => {
+    // Set mounted state to true
+    setIsMounted(true);
+    
+    return () => {
+      // Set mounted state to false when unmounting
+      setIsMounted(false);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isMounted) return;
+    
     // Function to trigger the announcement
     const announceLoading = () => {
       if (liveRegionRef.current && document.body.contains(liveRegionRef.current)) {
-        // Clear and then set the content to trigger screen readers to announce it again
+        // Generate a unique message with timestamp to force screen readers to announce again
+        const timestamp = new Date().getTime();
+        liveRegionRef.current.setAttribute('data-timestamp', timestamp);
+        
+        // First clear the content
         liveRegionRef.current.textContent = '';
-        // Use setTimeout to ensure the DOM has time to process the clearing
+        
+        // Then set the content after a short delay
         setTimeout(() => {
-          liveRegionRef.current.textContent = 'Loading';
+          if (liveRegionRef.current) {
+            liveRegionRef.current.textContent = 'Loading';
+          }
         }, 50);
       }
     };
     
-    // Ensure immediate announcement on first render
-    // Using a small timeout to ensure the element is fully in the DOM
+    // Immediate announcement on mount with longer delay to ensure DOM is ready
     const initialTimeout = setTimeout(() => {
       announceLoading();
-    }, 100);
+    }, 200);
     
     // Create an interval that updates the live region every 10 seconds
     const intervalId = setInterval(announceLoading, 10000);
@@ -33,16 +53,17 @@ const AccessibleLoader = () => {
       clearInterval(intervalId);
       clearTimeout(initialTimeout);
     };
-  }, []);
+  }, [isMounted]);
   
   return (
-    <div className="loader-container">
+    <div className="loader-container" aria-busy="true">
       {/* Your organization's spinner component */}
-      <Spinner />
+      <Spinner aria-hidden="true" />
       
       {/* Visually hidden live region for screen readers */}
       <div 
         ref={liveRegionRef}
+        id={id}
         role="status"
         aria-live="polite"
         className="sr-only"
