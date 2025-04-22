@@ -1,105 +1,131 @@
 
-### Create a Router Mock Setup
+Here's how you can refactor this:
 
-You can set up a global mock for React Router in your test setup file (like `setupTests.js` or similar):
+1. Create a dedicated test utilities file for your mocks
+2. Set up flexible mock functions for both React Router and Redux
+3. Create helper functions to use in your tests
+
+Here's my recommendation:
 
 ```javascript
-// setupTests.js or a similar setup file
+// test-utils.js - Create this file to centralize your mocks
 import { vi } from 'vitest';
-
-// Create a mock navigate function that all tests can access
-const mockNavigate = vi.fn();
-
-// Mock the entire react-router-dom module
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return {
-    ...actual,
-    useNavigate: () => mockNavigate
-  };
-});
-
-// Make mockNavigate available globally for tests
-global.mockNavigate = mockNavigate;
-```
-
-### Test Wrapper for Components
-
-Create a wrapper component that provides the router context to all your components under test:
-
-```javascript
-// test-utils.jsx
 import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { Provider } from 'react-redux';
 
-export function renderWithRouter(ui, { route = '/', ...renderOptions } = {}) {
-  return render(
-    <MemoryRouter initialEntries={[route]}>
-      {ui}
-    </MemoryRouter>,
-    renderOptions
-  );
+// Mock functions that can be spied on and configured
+export const mockNavigate = vi.fn();
+export const mockDispatch = vi.fn();
+
+// Setup function to configure mocks before tests
+export function setupMocks() {
+  // Mock React Router
+  vi.mock('react-router-dom', async () => {
+    const actual = await vi.importActual('react-router-dom');
+    return {
+      ...actual,
+      useNavigate: () => mockNavigate
+    };
+  });
+
+  // Mock React Redux
+  vi.mock('react-redux', async () => {
+    const actual = await vi.importActual('react-redux');
+    return {
+      ...actual,
+      useDispatch: () => mockDispatch
+    };
+  });
+}
+
+// Reset all mocks between tests
+export function resetMocks() {
+  mockNavigate.mockReset();
+  mockDispatch.mockReset();
+}
+
+// Custom render function with Router and Redux Provider
+export function renderWithProvidersAndRouter(
+  ui,
+  {
+    preloadedState = {},
+    store = initStore(preloadedState),
+    route = '/',
+    ...renderOptions
+  } = {}
+) {
+  function Wrapper({ children }) {
+    return (
+      <Provider store={store}>
+        <MemoryRouter initialEntries={[route]}>
+          {children}
+        </MemoryRouter>
+      </Provider>
+    );
+  }
+
+  return {
+    store,
+    mockNavigate,
+    mockDispatch,
+    ...render(ui, { wrapper: Wrapper, ...renderOptions })
+  };
 }
 ```
 
-### Using in Your Tests
-
-Then in your tests, you can use it like this:
+Then in your test files:
 
 ```javascript
-import { renderWithRouter } from './test-utils';
-import { screen, fireEvent } from '@testing-library/react';
+// YourComponent.test.js
+import { 
+  setupMocks, 
+  resetMocks, 
+  mockNavigate, 
+  mockDispatch, 
+  renderWithProvidersAndRouter 
+} from './test-utils';
+import { beforeEach, describe, it, expect } from 'vitest';
 import YourComponent from './YourComponent';
-import { beforeEach } from 'vitest';
 
-describe('YourComponent', () => {
+// Setup mocks before all tests in this file
+setupMocks();
+
+describe('BusinessCardRuleList Component', () => {
   beforeEach(() => {
-    // Reset the mock before each test
-    mockNavigate.mockReset();
+    // Reset mocks before each test
+    resetMocks();
   });
 
-  test('navigates when button is clicked', () => {
-    renderWithRouter(<YourComponent />);
+  it('Should click add button without error', async () => {
+    // Setup specific mock behavior if needed
+    mockDispatch.mockReturnValue({ type: 'SOME_ACTION' });
     
-    // Trigger navigation action
-    fireEvent.click(screen.getByText('Go to Dashboard'));
+    // Render with all providers
+    const { getByLabelText } = renderWithProvidersAndRouter(<YourComponent />);
     
-    // Assert navigation occurred with correct path
-    expect(mockNavigate).toHaveBeenCalledWith('/dashboard');
+    // Your test code here
+    fireEvent.click(getByLabelText('ARIA_BCR'));
+    
+    // Assertions
+    expect(mockDispatch).toHaveBeenCalled();
+  });
+
+  it('Should navigate when clicking a link', async () => {
+    const { getByText } = renderWithProvidersAndRouter(<YourComponent />);
+    
+    fireEvent.click(getByText('Go to details'));
+    
+    expect(mockNavigate).toHaveBeenCalledWith('/details');
   });
 });
 ```
 
-### For More Complex Router Testing
+This approach gives you:
 
-If you need to test more complex router features (like parameters, nested routes, etc.), you can enhance your test wrapper:
+1. Centralized mock setup that's reusable across test files
+2. Clean test files that focus on behavior rather than setup
+3. Easy access to mock functions for assertions
+4. Flexible rendering options with all necessary providers
 
-```javascript
-export function renderWithAdvancedRouter(
-  ui, 
-  { 
-    route = '/', 
-    routes = [], 
-    historyOptions = {} 
-  } = {}
-) {
-  const Wrapper = ({ children }) => (
-    <MemoryRouter initialEntries={[route]} {...historyOptions}>
-      {routes.length > 0 ? (
-        <Routes>
-          {routes.map((routeProps) => (
-            <Route key={routeProps.path} {...routeProps} />
-          ))}
-          <Route path="*" element={children} />
-        </Routes>
-      ) : (
-        children
-      )}
-    </MemoryRouter>
-  );
-  
-  return render(ui, { wrapper: Wrapper });
-}
-```
-
-This approach allows you to consistently mock and test navigation throughout your entire application while keeping your tests clean and focused on component behavior.
+The modular structure makes maintenance much easier as your application grows, and you can extend it with additional mocks as needed.
