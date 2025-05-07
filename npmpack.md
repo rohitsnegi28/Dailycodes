@@ -1,0 +1,1 @@
+nodePackageCommand: sh -c "filename=$(npm pack) && mv \"$filename\" \"${filename%.tgz}-beta.tgz\""
