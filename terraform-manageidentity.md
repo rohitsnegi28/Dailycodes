@@ -2400,3 +2400,602 @@ module "jenkins_managed_identity" {
 }
 
 # ==============================================================================
+
+
+
+
+# Why main.tf Differs Between Environments & Better Approaches
+
+## The Problem: Different main.tf Files (ELI5)
+
+Think of environments like **different versions of the same building**:
+- **Development** = Small prototype house (cheaper, simpler)
+- **Production** = Full-scale mansion (expensive, complex, secure)
+
+Even though they're the "same house," they need different features!
+
+## Why main.tf Currently Differs
+
+### Current Approach (What I Showed Earlier)
+```
+environments/
+├── dev/main.tf      ← Different content
+├── staging/main.tf  ← Different content  
+└── prod/main.tf     ← Different content
+```
+
+### Differences You'll See:
+
+#### 1. **Different Resources per Environment**
+```hcl
+# DEV main.tf - Simple setup
+module "terraform_identity" {
+  source = "catalog-url//managed-identity"
+  name   = "terraform-dev-identity"
+}
+
+# PROD main.tf - Complex setup with monitoring
+module "terraform_identity" {
+  source = "catalog-url//managed-identity" 
+  name   = "terraform-prod-identity"
+}
+
+module "monitoring_identity" {        # ← Only in production
+  source = "catalog-url//managed-identity"
+  name   = "monitoring-prod-identity"
+}
+
+module "backup_identity" {            # ← Only in production
+  source = "catalog-url//managed-identity"
+  name   = "backup-prod-identity"
+}
+```
+
+#### 2. **Different Security Requirements**
+```hcl
+# DEV main.tf - Relaxed security
+provider "azurerm" {
+  features {
+    resource_group {
+      prevent_deletion_if_contains_resources = false  # Allow deletion
+    }
+    key_vault {
+      purge_soft_delete_on_destroy = true  # Clean up completely
+    }
+  }
+}
+
+# PROD main.tf - Strict security
+provider "azurerm" {
+  features {
+    resource_group {
+      prevent_deletion_if_contains_resources = true   # Prevent accidents
+    }
+    key_vault {
+      purge_soft_delete_on_destroy = false  # Keep deleted items for recovery
+    }
+  }
+}
+```
+
+#### 3. **Different Permission Scopes**
+```hcl
+# DEV main.tf - Limited scope
+module "terraform_role" {
+  scope = "/subscriptions/sub-id/resourceGroups/rg-dev"  # Only dev RG
+  role  = "Contributor"
+}
+
+# PROD main.tf - Broader scope
+module "terraform_role" {
+  scope = "/subscriptions/sub-id"  # Entire subscription
+  role  = "Contributor"
+}
+```
+
+## Better Approaches: DRY (Don't Repeat Yourself)
+
+### Approach 1: Shared Module with Conditional Logic
+
+#### Create: modules/managed-identity-stack/main.tf
+```hcl
+# ==============================================================================
+# SHARED MODULE FOR ALL ENVIRONMENTS
+# ==============================================================================
+# This module contains ALL the logic, but uses conditions to enable/disable features
+
+locals {
+  # Environment-specific settings
+  environment_config = {
+    dev = {
+      enable_monitoring_identity = false
+      enable_backup_identity     = false
+      enable_advanced_security   = false
+      role_scope_level          = "resource_group"  # Limited scope
+      backup_tier               = "Standard"
+    }
+    staging = {
+      enable_monitoring_identity = true
+      enable_backup_identity     = false
+      enable_advanced_security   = true
+      role_scope_level          = "resource_group"
+      backup_tier               = "Premium"
+    }
+    prod = {
+      enable_monitoring_identity = true
+      enable_backup_identity     = true
+      enable_advanced_security   = true
+      role_scope_level          = "subscription"  # Full scope
+      backup_tier               = "Premium"
+    }
+  }
+  
+  # Get current environment config
+  current_config = local.environment_config[var.environment]
+}
+
+# Generate random suffix for unique names
+resource "random_string" "suffix" {
+  length  = 4
+  special = false
+  upper   = false
+}
+
+# ==============================================================================
+# RESOURCE GROUP (Always created)
+# ==============================================================================
+module "identity_resource_group" {
+  source = var.catalog_resource_group_source
+  
+  name     = "rg-identity-${var.environment}-${random_string.suffix.result}"
+  location = var.azure_region
+  
+  tags = merge(var.common_tags, {
+    Environment = var.environment
+    Purpose     = "Identity Management"
+  })
+}
+
+# ==============================================================================
+# TERRAFORM MANAGED IDENTITY (Always created)
+# ==============================================================================
+module "terraform_managed_identity" {
+  source = var.catalog_managed_identity_source
+  
+  name                = "mi-terraform-${var.environment}-${random_string.suffix.result}"
+  resource_group_name = module.identity_resource_group.name
+  location           = module.identity_resource_group.location
+  
+  description = "Terraform Managed Identity for ${var.environment} environment"
+  
+  tags = merge(var.common_tags, {
+    Purpose     = "Terraform Automation"
+    Environment = var.environment
+  })
+}
+
+# ==============================================================================
+# JENKINS MANAGED IDENTITY (Always created)
+# ==============================================================================
+module "jenkins_managed_identity" {
+  source = var.catalog_managed_identity_source
+  
+  name                = "mi-jenkins-${var.environment}-${random_string.suffix.result}"
+  resource_group_name = module.identity_resource_group.name
+  location           = module.identity_resource_group.location
+  
+  description = "Jenkins Managed Identity for ${var.environment} environment"
+  
+  tags = merge(var.common_tags, {
+    Purpose     = "Application Deployment"
+    Environment = var.environment
+  })
+}
+
+# ==============================================================================
+# MONITORING IDENTITY (Conditional - only staging and prod)
+# ==============================================================================
+module "monitoring_managed_identity" {
+  count  = local.current_config.enable_monitoring_identity ? 1 : 0
+  source = var.catalog_managed_identity_source
+  
+  name                = "mi-monitoring-${var.environment}-${random_string.suffix.result}"
+  resource_group_name = module.identity_resource_group.name
+  location           = module.identity_resource_group.location
+  
+  description = "Monitoring Managed Identity for ${var.environment} environment"
+  
+  tags = merge(var.common_tags, {
+    Purpose     = "Monitoring and Alerting"
+    Environment = var.environment
+  })
+}
+
+# ==============================================================================
+# BACKUP IDENTITY (Conditional - only prod)
+# ==============================================================================
+module "backup_managed_identity" {
+  count  = local.current_config.enable_backup_identity ? 1 : 0
+  source = var.catalog_managed_identity_source
+  
+  name                = "mi-backup-${var.environment}-${random_string.suffix.result}"
+  resource_group_name = module.identity_resource_group.name
+  location           = module.identity_resource_group.location
+  
+  description = "Backup Managed Identity for ${var.environment} environment"
+  
+  tags = merge(var.common_tags, {
+    Purpose     = "Backup Operations"
+    Environment = var.environment
+  })
+}
+
+# ==============================================================================
+# TERRAFORM ROLE ASSIGNMENT (Environment-specific scope)
+# ==============================================================================
+module "terraform_role_assignment" {
+  source = var.catalog_role_assignment_source
+  
+  # Dynamic scope based on environment
+  scope = local.current_config.role_scope_level == "subscription" ? (
+    "/subscriptions/${var.subscription_id}"
+  ) : (
+    module.identity_resource_group.id
+  )
+  
+  role_definition_name = "Contributor"
+  principal_id         = module.terraform_managed_identity.principal_id
+  
+  description = "Terraform ${var.environment} infrastructure management"
+}
+
+# ==============================================================================
+# MONITORING ROLE ASSIGNMENT (Conditional)
+# ==============================================================================
+module "monitoring_role_assignment" {
+  count  = local.current_config.enable_monitoring_identity ? 1 : 0
+  source = var.catalog_role_assignment_source
+  
+  scope                = "/subscriptions/${var.subscription_id}"
+  role_definition_name = "Reader"
+  principal_id         = module.monitoring_managed_identity[0].principal_id
+  
+  description = "Monitoring ${var.environment} read access"
+}
+
+# ==============================================================================
+# ADVANCED SECURITY FEATURES (Conditional)
+# ==============================================================================
+module "advanced_security" {
+  count  = local.current_config.enable_advanced_security ? 1 : 0
+  source = var.catalog_security_module_source
+  
+  managed_identity_ids = [
+    module.terraform_managed_identity.id,
+    module.jenkins_managed_identity.id
+  ]
+  
+  environment = var.environment
+  
+  security_settings = {
+    enable_conditional_access = true
+    enable_audit_logging     = true
+    enable_threat_detection  = true
+  }
+}
+```
+
+#### Now Each Environment Uses the SAME Module:
+
+**environments/dev/main.tf**
+```hcl
+# ==============================================================================
+# DEVELOPMENT ENVIRONMENT
+# ==============================================================================
+# This file is now SIMPLE - just calls the shared module
+
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.0"
+    }
+  }
+}
+
+provider "azurerm" {
+  features {
+    # Development-specific provider settings
+    resource_group {
+      prevent_deletion_if_contains_resources = false
+    }
+    key_vault {
+      purge_soft_delete_on_destroy = true
+    }
+  }
+  use_msi = true
+}
+
+# Call the shared module with dev-specific variables
+module "managed_identity_stack" {
+  source = "../../modules/managed-identity-stack"
+  
+  # Environment-specific inputs
+  environment     = "dev"
+  azure_region    = var.azure_region
+  subscription_id = var.subscription_id
+  
+  # Common settings
+  common_tags = var.common_tags
+  
+  # Catalog sources
+  catalog_resource_group_source    = var.catalog_resource_group_source
+  catalog_managed_identity_source  = var.catalog_managed_identity_source
+  catalog_role_assignment_source   = var.catalog_role_assignment_source
+  catalog_security_module_source   = var.catalog_security_module_source
+}
+```
+
+**environments/prod/main.tf**
+```hcl
+# ==============================================================================
+# PRODUCTION ENVIRONMENT  
+# ==============================================================================
+# This file is IDENTICAL to dev - only variables change!
+
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.0"
+    }
+  }
+}
+
+provider "azurerm" {
+  features {
+    # Production-specific provider settings
+    resource_group {
+      prevent_deletion_if_contains_resources = true
+    }
+    key_vault {
+      purge_soft_delete_on_destroy = false
+    }
+  }
+  use_msi = true
+}
+
+# Same module call, different environment
+module "managed_identity_stack" {
+  source = "../../modules/managed-identity-stack"
+  
+  # Only this changes!
+  environment     = "prod"  # ← This drives all the differences
+  azure_region    = var.azure_region
+  subscription_id = var.subscription_id
+  
+  common_tags = var.common_tags
+  
+  catalog_resource_group_source    = var.catalog_resource_group_source
+  catalog_managed_identity_source  = var.catalog_managed_identity_source
+  catalog_role_assignment_source   = var.catalog_role_assignment_source
+  catalog_security_module_source   = var.catalog_security_module_source
+}
+```
+
+### Approach 2: Using Terraform Workspaces
+
+#### Single main.tf for ALL Environments
+```hcl
+# ==============================================================================
+# SINGLE MAIN.TF FOR ALL ENVIRONMENTS
+# ==============================================================================
+# Uses terraform.workspace to determine behavior
+
+locals {
+  # Environment detection
+  environment = terraform.workspace
+  
+  # Environment-specific configuration
+  config = {
+    dev = {
+      instance_count             = 1
+      vm_size                   = "Standard_B2s"
+      enable_monitoring         = false
+      enable_backup            = false
+      role_scope               = "resource_group"
+    }
+    staging = {
+      instance_count             = 2
+      vm_size                   = "Standard_D2s_v3"
+      enable_monitoring         = true
+      enable_backup            = false
+      role_scope               = "resource_group"
+    }
+    prod = {
+      instance_count             = 3
+      vm_size                   = "Standard_D4s_v3"
+      enable_monitoring         = true
+      enable_backup            = true
+      role_scope               = "subscription"
+    }
+  }
+  
+  current_config = local.config[local.environment]
+}
+
+# Resource group with environment-specific naming
+module "identity_resource_group" {
+  source = var.catalog_resource_group_source
+  
+  name     = "rg-identity-${local.environment}"
+  location = var.azure_region
+  
+  tags = merge(var.common_tags, {
+    Environment = local.environment
+  })
+}
+
+# Terraform identity (always created)
+module "terraform_managed_identity" {
+  source = var.catalog_managed_identity_source
+  
+  name                = "mi-terraform-${local.environment}"
+  resource_group_name = module.identity_resource_group.name
+  location           = module.identity_resource_group.location
+}
+
+# Monitoring identity (conditional based on environment)
+module "monitoring_managed_identity" {
+  count  = local.current_config.enable_monitoring ? 1 : 0
+  source = var.catalog_managed_identity_source
+  
+  name                = "mi-monitoring-${local.environment}"
+  resource_group_name = module.identity_resource_group.name
+  location           = module.identity_resource_group.location
+}
+
+# Environment-specific role assignments
+module "terraform_role_assignment" {
+  source = var.catalog_role_assignment_source
+  
+  scope = local.current_config.role_scope == "subscription" ? (
+    "/subscriptions/${var.subscription_id}"
+  ) : (
+    module.identity_resource_group.id
+  )
+  
+  role_definition_name = "Contributor"
+  principal_id         = module.terraform_managed_identity.principal_id
+}
+```
+
+#### Usage with Workspaces
+```bash
+# Create workspaces
+terraform workspace new dev
+terraform workspace new staging  
+terraform workspace new prod
+
+# Deploy to different environments
+terraform workspace select dev
+terraform apply
+
+terraform workspace select prod
+terraform apply
+```
+
+### Approach 3: Using .tfvars Files Only
+
+#### Single main.tf + Environment-Specific Variables
+
+**main.tf (same for all environments)**
+```hcl
+# ==============================================================================
+# UNIVERSAL MAIN.TF 
+# ==============================================================================
+# All logic driven by variables
+
+module "terraform_managed_identity" {
+  source = var.catalog_managed_identity_source
+  
+  name                = "mi-terraform-${var.environment}"
+  resource_group_name = var.resource_group_name
+  location           = var.azure_region
+}
+
+# Conditional resources based on variables
+module "monitoring_managed_identity" {
+  count  = var.enable_monitoring_identity ? 1 : 0
+  source = var.catalog_managed_identity_source
+  
+  name                = "mi-monitoring-${var.environment}"
+  resource_group_name = var.resource_group_name
+  location           = var.azure_region
+}
+
+module "terraform_role_assignment" {
+  source = var.catalog_role_assignment_source
+  
+  scope                = var.terraform_role_scope
+  role_definition_name = "Contributor"
+  principal_id         = module.terraform_managed_identity.principal_id
+}
+```
+
+**dev.tfvars**
+```hcl
+environment                = "dev"
+enable_monitoring_identity = false
+enable_backup_identity     = false
+terraform_role_scope       = "/subscriptions/sub-id/resourceGroups/rg-dev"
+vm_size                   = "Standard_B2s"
+```
+
+**prod.tfvars**
+```hcl
+environment                = "prod"
+enable_monitoring_identity = true
+enable_backup_identity     = true
+terraform_role_scope       = "/subscriptions/sub-id"
+vm_size                   = "Standard_D4s_v3"
+```
+
+**Usage:**
+```bash
+# Deploy to dev
+terraform apply -var-file="dev.tfvars"
+
+# Deploy to prod  
+terraform apply -var-file="prod.tfvars"
+```
+
+## Recommendation: Which Approach to Use?
+
+### **Best Approach: Shared Module with Conditional Logic**
+
+**Why this is best for your situation:**
+
+✅ **Single source of truth** - All logic in one place
+✅ **Easy to maintain** - Change once, applies everywhere
+✅ **Environment-specific features** - Can enable/disable features per environment
+✅ **Follows DRY principle** - Don't repeat yourself
+✅ **Enterprise-friendly** - Works well with catalog modules
+✅ **Clear separation** - Environment differences are explicit
+
+### **Implementation for Your Case:**
+
+```
+your-project/
+├── modules/
+│   └── managed-identity-stack/     # ← Shared module
+│       ├── main.tf                 # ← All the logic
+│       ├── variables.tf            # ← All inputs
+│       └── outputs.tf              # ← All outputs
+│
+└── environments/
+    ├── dev/
+    │   ├── main.tf                 # ← Just calls shared module
+    │   ├── terraform.tfvars        # ← Dev-specific values
+    │   └── backend.tf              # ← Dev backend config
+    ├── staging/
+    │   ├── main.tf                 # ← Identical to dev
+    │   ├── terraform.tfvars        # ← Staging-specific values  
+    │   └── backend.tf              # ← Staging backend config
+    └── prod/
+        ├── main.tf                 # ← Identical to dev and staging
+        ├── terraform.tfvars        # ← Prod-specific values
+        └── backend.tf              # ← Prod backend config
+```
+
+### **Benefits in Practice:**
+
+1. **Bug fixes** - Fix once in shared module, applies to all environments
+2. **New features** - Add once, enable per environment as needed
+3. **Consistency** - Same patterns across all environments
+4. **Testing** - Test the module once, confident it works everywhere
+5. **Onboarding** - New team members learn one pattern
+
+This approach gives you the **flexibility of different configurations** while maintaining the **simplicity of shared code**!
