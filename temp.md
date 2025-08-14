@@ -179,3 +179,180 @@ Do you want me to give you the same set of commands for your api namespace deplo
 
 
 
+
+
+
+----------
+
+
+
+Here’s your full debug + wiring checklist in Markdown format with all sensitive values replaced by placeholders.
+
+
+---
+
+AKS Workload Identity Debug & Wiring Checklist
+
+0️⃣ Check Deployment Spec
+
+# Show ServiceAccount name, labels, automount flag
+kubectl get deploy <DEPLOYMENT_NAME> -n <NAMESPACE> \
+  -o jsonpath='{.spec.template.spec.serviceAccountName}{"\n"}{.spec.template.metadata.labels}{"\n"}{.spec.template.spec.automountServiceAccountToken}{"\n"}'
+
+# Show if AZURE_CLIENT_ID env is set
+kubectl set env deployment/<DEPLOYMENT_NAME> -n <NAMESPACE> --list | grep AZURE_CLIENT_ID || true
+
+✅ Expect:
+
+serviceAccountName = <SERVICE_ACCOUNT> (matches FC subject)
+
+Labels include "azure.workload.identity/use":"true"
+
+automountServiceAccountToken is true or blank
+
+AZURE_CLIENT_ID is set to <UAMI_CLIENT_ID>
+
+
+
+---
+
+1️⃣ Ensure Deployment is Wired Correctly
+
+# Set serviceAccountName & automount token
+kubectl patch deploy <DEPLOYMENT_NAME> -n <NAMESPACE> \
+  -p '{"spec":{"template":{"spec":{"serviceAccountName":"<SERVICE_ACCOUNT>","automountServiceAccountToken":true}}}}'
+
+# Add Workload Identity label
+kubectl patch deploy <DEPLOYMENT_NAME> -n <NAMESPACE> \
+  -p '{"spec":{"template":{"metadata":{"labels":{"azure.workload.identity/use":"true"}}}}}'
+
+# Set AZURE_CLIENT_ID env
+kubectl set env deployment/<DEPLOYMENT_NAME> -n <NAMESPACE> AZURE_CLIENT_ID=<UAMI_CLIENT_ID>
+
+# Restart deployment
+kubectl rollout restart deploy/<DEPLOYMENT_NAME> -n <NAMESPACE>
+kubectl rollout status  deploy/<DEPLOYMENT_NAME> -n <NAMESPACE>
+
+
+---
+
+2️⃣ Verify Workload Identity Webhook
+
+kubectl get mutatingwebhookconfigurations | grep -i workload || true
+kubectl get pods -A | grep -i workload-identity || true
+
+✅ You should see Azure Workload Identity webhook resources and pods running.
+
+
+---
+
+3️⃣ Test Token Injection With a Smoke Pod
+
+kubectl run wi-smoke -n <NAMESPACE> \
+  --image=busybox --restart=Never --command -- sleep 600 \
+  --overrides '{
+    "apiVersion":"v1",
+    "metadata":{"labels":{"azure.workload.identity/use":"true"}},
+    "spec":{
+      "serviceAccountName":"<SERVICE_ACCOUNT>",
+      "automountServiceAccountToken": true,
+      "containers":[{"name":"box","image":"busybox","args":["sleep","600"],
+        "env":[{"name":"AZURE_CLIENT_ID","value":"<UAMI_CLIENT_ID>"}]}]
+    }}'
+
+# Check token exists
+kubectl exec -n <NAMESPACE> wi-smoke -- ls /var/run/secrets/azure/tokens
+
+# View token contents (issuer, subject, audience)
+kubectl exec -n <NAMESPACE> wi-smoke -- sh -c 'cat /var/run/secrets/azure/tokens/azure-identity-token'
+
+✅ Expect:
+
+iss = <AKS_OIDC_ISSUER_URL> (matches FC issuer)
+
+sub = system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>
+
+aud includes api://AzureADTokenExchange
+
+
+
+---
+
+4️⃣ Confirm Federated Credential in Azure
+
+# Get AKS OIDC issuer
+ISSUER=$(az aks show -g <AKS_RESOURCE_GROUP> -n <AKS_CLUSTER_NAME> --query oidcIssuerProfile.issuerUrl -o tsv)
+echo "$ISSUER"
+
+# List FCs on UAMI
+az identity federated-credential list -g <UAMI_RESOURCE_GROUP> -n <UAMI_NAME> -o table
+
+# Show details for a specific FC
+az identity federated-credential show \
+  -g <UAMI_RESOURCE_GROUP> -n <UAMI_NAME> \
+  --federated-credential-name <FC_NAME> \
+  --query "{issuer:properties.issuer,subject:properties.subject,audience:properties.audience}"
+
+✅ Expect:
+
+issuer matches $ISSUER
+
+subject = system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>
+
+audience includes api://AzureADTokenExchange
+
+
+
+---
+
+5️⃣ Check Logs for CrashLoopBackOff
+
+# Get pod name
+POD=$(kubectl get pods -n <NAMESPACE> -l app=<APP_LABEL> -o jsonpath='{.items[0].metadata.name}')
+
+# Previous logs (before restart)
+kubectl logs $POD -n <NAMESPACE> --previous || true
+
+# Pod description (look for projected volume "azure-identity-token")
+kubectl describe pod $POD -n <NAMESPACE> | sed -n '1,220p'
+
+
+---
+
+6️⃣ Network / Private Endpoint DNS Check
+
+(Only if RBAC & token injection are good)
+
+kubectl run dnscheck -n <NAMESPACE> --image=busybox --restart=Never --command -- sh -c "sleep 300"
+kubectl exec -n <NAMESPACE> dnscheck -- nslookup <KEYVAULT_NAME>.vault.azure.net
+kubectl delete pod dnscheck -n <NAMESPACE> --ignore-not-found
+
+✅ Expect:
+
+CNAME to <KEYVAULT_NAME>.privatelink.vaultcore.azure.net
+
+Private IP in your VNet range
+
+
+
+---
+
+What the Results Mean
+
+Smoke pod token file present & correct iss/sub/aud → Workload Identity wiring is OK → If still 403, check Key Vault RBAC, role scope, and network.
+
+Smoke pod missing token file → Wiring issue (labels, SA annotation, automount, webhook).
+
+Token OK but DNS resolves to public IP → Private Endpoint/DNS issue.
+
+App crashes but smoke pod OK → App crash unrelated to Workload Identity (check logs).
+
+
+
+---
+
+Do you want me to also make you a minimal Helm values/YAML template so this wiring is always applied automatically during deploys? That would prevent these manual patch steps in the future.
+
+
+
+
