@@ -1,4 +1,4 @@
-68
+768
 1) Check the ServiceAccount wiring
 
 # list SAs in your namespace
@@ -402,6 +402,57 @@ If this DNS check returns a private IP (10.x.x.x), DNS is fine and your CrashLoo
 If it returns a public IP, then the pod is bypassing your private DNS zone.
 
 Do you want me to give you a quick portal-only way to confirm DNS without touching pods? That could avoid these pull issues entirely.
+
+
+
+
+I see from your screenshot that the ingress pod you tried to exec into doesn’t have a shell (sh) or nslookup installed, so it failed.
+You’ve got two practical options now:
+
+
+---
+
+Option 1 — Use an ephemeral debug container (no changes to existing pod image)
+
+This lets you temporarily attach a container with debugging tools to your ingress pod:
+
+kubectl debug -it -n webui-internal \
+  ingressgateway-594757d48f-cflh7 \
+  --image=mcr.microsoft.com/aks/fundamental/base-ubuntu:v0.0.11 -- bash
+
+Then inside the ephemeral container:
+
+apt-get update && apt-get install -y dnsutils curl
+nslookup <KEYVAULT_NAME>.vault.azure.net
+curl -I https://<KEYVAULT_NAME>.vault.azure.net/
+
+
+---
+
+Option 2 — Run a standalone debug pod in same namespace
+
+This avoids touching ingress entirely but still uses the same network path:
+
+kubectl run dns-test \
+  -n webui-internal \
+  --rm -it \
+  --image=mcr.microsoft.com/aks/fundamental/base-ubuntu:v0.0.11 \
+  -- bash
+
+Then inside:
+
+apt-get update && apt-get install -y dnsutils curl
+nslookup <KEYVAULT_NAME>.vault.azure.net
+curl -I https://<KEYVAULT_NAME>.vault.azure.net/
+
+
+---
+
+Since your goal is just to check DNS resolution + connectivity to Key Vault, either option will work.
+If you want to reuse ingress for the test, Option 1 is cleaner.
+
+Do you want me to prepare the expected DNS output so you’ll know instantly if it’s hitting the private endpoint?
+
 
 
 
