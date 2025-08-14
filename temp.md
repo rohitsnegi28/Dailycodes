@@ -1,460 +1,283 @@
-768
-1) Check the ServiceAccount wiring
+"""# AKS Workload Identity → Azure Key Vault (End-to-End Runbook)
 
-# list SAs in your namespace
-kubectl get sa -n <NAMESPACE>
+> A single, copy-pasteable guide to wire your pods (Kubernetes ServiceAccounts) to a **User-Assigned Managed Identity (UAMI)** via **AKS Workload Identity**, authorize against **Azure Key Vault** using **Azure RBAC**, and **debug** issues.  
+> All sensitive values are placeholders — replace anything in `<>`.
 
-# show the SA you expect the pod to use
-kubectl get sa <SERVICE_ACCOUNT> -n <NAMESPACE> -o yaml | sed -n '1,120p'
-# ✅ Look for:
-# annotations:
-#   azure.workload.identity/client-id: <UAMI_CLIENT_ID>
+---
 
-2) Check your Deployment’s pod template (labels, SA, env)
+## 0) Fill These Variables (once)
 
-# Which SA is your deployment using? Is WI label present?
-kubectl get deploy <DEPLOYMENT> -n <NAMESPACE> \
-  -o jsonpath='{.spec.template.spec.serviceAccountName}{"\n"}{.spec.template.metadata.labels}{"\n"}{.spec.template.spec.automountServiceAccountToken}{"\n"}'
+```bash
+# ====== REQUIRED (you fill) ======
+NAMESPACE="<YOUR_NAMESPACE>"                       # e.g. webui-internal
+DEPLOYMENT="<YOUR_DEPLOYMENT_NAME>"                # e.g. app-mlc-fasat-web
+SERVICE_ACCOUNT="<YOUR_SERVICEACCOUNT>"            # e.g. default
+UAMI_RG="<UAMI_RESOURCE_GROUP>"                    # RG of your user-assigned managed identity
+UAMI_NAME="<UAMI_NAME>"                            # name of the UAMI ("secrets identity")
+KV_NAME="<YOUR_KEYVAULT_NAME>"                     # e.g. mif-cc-fasat-dev2-akv
+AKS_RG="<AKS_RESOURCE_GROUP>"                      # AKS resource group
+AKS_NAME="<AKS_CLUSTER_NAME>"                      # AKS cluster name
+# Optional (for diagnostics / DNS checks)
+DNS_RG="<DNS_RESOURCE_GROUP>"
+LOG_ANALYTICS_WORKSPACE_RESOURCE_ID="<LAW_RESOURCE_ID>"
+# =================================
+```
 
-# Do containers have AZURE_CLIENT_ID?
-kubectl set env deployment/<DEPLOYMENT> -n <NAMESPACE> --list | grep AZURE_CLIENT_ID
+### Derive These (CLI computes them)
 
-✅ You want:
+```bash
+# Managed Identity (UAMI) IDs
+read UAMI_CLIENT_ID UAMI_PRINCIPAL_ID <<<$(az identity show -g "$UAMI_RG" -n "$UAMI_NAME" --query "[clientId,principalId]" -o tsv)
 
-serviceAccountName = <SERVICE_ACCOUNT> (matches your federated credential’s subject)
+# Key Vault resource ID
+VAULT_ID=$(az keyvault show -n "$KV_NAME" --query id -o tsv)
 
-labels include: azure.workload.identity/use: true
+# AKS OIDC issuer (must match Federated Credential issuer)
+ISSUER=$(az aks show -g "$AKS_RG" -n "$AKS_NAME" --query oidcIssuerProfile.issuerUrl -o tsv)
 
-automountServiceAccountToken not set to false (if it’s false, that breaks WI)
+echo "UAMI_CLIENT_ID=$UAMI_CLIENT_ID"
+echo "UAMI_PRINCIPAL_ID=$UAMI_PRINCIPAL_ID"
+echo "VAULT_ID=$VAULT_ID"
+echo "ISSUER=$ISSUER"
+```
 
-AZURE_CLIENT_ID is set to your UAMI client ID
+---
 
+## 1) Wire Kubernetes (ServiceAccount + Pod Template + Env)
 
-3) Check the Workload Identity webhook is active
+> These are idempotent; safe to run again.
 
-kubectl get mutatingwebhookconfigurations | grep -i workload
-kubectl get pods -A | grep -i workload-identity
+```bash
+# 1.1 Annotate the ServiceAccount with the UAMI clientId
+kubectl annotate sa "$SERVICE_ACCOUNT" -n "$NAMESPACE" \
+  azure.workload.identity/client-id="$UAMI_CLIENT_ID" --overwrite
 
-(You should see the WI mutating webhook installed/ready.)
+# 1.2 Make the Deployment run as that SA, opt in to Workload Identity, and ensure token mount
+kubectl patch deploy "$DEPLOYMENT" -n "$NAMESPACE" \
+  -p '{"spec":{"template":{"spec":{"serviceAccountName":"'"$SERVICE_ACCOUNT"'","automountServiceAccountToken":true}}}}'
 
-4) Inspect the crashing pod without exec
-
-# pick the newest pod for the deployment
-POD=$(kubectl get pods -n <NAMESPACE> -l app=<DEPLOYMENT> \
-  -o jsonpath='{.items[-1].metadata.name}')
-
-# see events + injected volumes
-kubectl describe pod $POD -n <NAMESPACE> | sed -n '1,200p'
-
-# get previous container logs (from the last crash)
-kubectl logs $POD -n <NAMESPACE> --previous
-
-✅ In describe, look for a projected volume named like azure-identity-token mounted at
-/var/run/secrets/azure/tokens. If that volume/mount is missing, the webhook didn’t inject → wiring issue.
-
-5) Patch fixes (if anything above is missing)
-
-5a) Annotate the ServiceAccount (idempotent)
-
-kubectl annotate sa <SERVICE_ACCOUNT> -n <NAMESPACE> \
-  azure.workload.identity/client-id=<UAMI_CLIENT_ID> --overwrite
-
-5b) Add the opt-in label to the Deployment’s pod template
-
-kubectl patch deploy <DEPLOYMENT> -n <NAMESPACE> \
+kubectl patch deploy "$DEPLOYMENT" -n "$NAMESPACE" \
   -p '{"spec":{"template":{"metadata":{"labels":{"azure.workload.identity/use":"true"}}}}}'
 
-5c) Ensure AZURE_CLIENT_ID env is present
+# 1.3 Help the Azure SDK pick your UAMI (clientId)
+kubectl set env deployment/"$DEPLOYMENT" -n "$NAMESPACE" AZURE_CLIENT_ID="$UAMI_CLIENT_ID"
 
-kubectl set env deployment/<DEPLOYMENT> -n <NAMESPACE> AZURE_CLIENT_ID=<UAMI_CLIENT_ID>
+# 1.4 Restart to apply
+kubectl rollout restart deploy/"$DEPLOYMENT" -n "$NAMESPACE"
+kubectl rollout status  deploy/"$DEPLOYMENT" -n "$NAMESPACE"
+```
 
-5d) Remove/flip automount=false if present
+### Quick Verifications (K8s wiring)
 
-# if you saw 'automountServiceAccountToken: false', turn it on
-kubectl patch deploy <DEPLOYMENT> -n <NAMESPACE> \
-  -p '{"spec":{"template":{"spec":{"automountServiceAccountToken": true}}}}'
+```bash
+# SA shows the annotation?
+kubectl get sa "$SERVICE_ACCOUNT" -n "$NAMESPACE" -o yaml | grep -A1 'azure.workload.identity/client-id'
 
-5e) Roll the pods
+# Pod template has SA, label, and token automount?
+kubectl get deploy "$DEPLOYMENT" -n "$NAMESPACE" \
+  -o jsonpath='{.spec.template.spec.serviceAccountName}{"\\n"}{.spec.template.metadata.labels}{"\\n"}{.spec.template.spec.automountServiceAccountToken}{"\\n"}' ; echo
 
-kubectl rollout restart deploy/<DEPLOYMENT> -n <NAMESPACE>
-kubectl rollout status  deploy/<DEPLOYMENT> -n <NAMESPACE>
-
-6) Create a one-off smoke pod to validate WI (no app needed)
-
-This lets you check token projection even if your app keeps crashing.
-
-kubectl run wi-smoke -n <NAMESPACE> \
-  --image=busybox --restart=Never --command -- sleep 3600 \
-  --overrides '{
-    "apiVersion":"v1",
-    "metadata":{"labels":{"azure.workload.identity/use":"true"}},
-    "spec":{
-      "serviceAccountName":"<SERVICE_ACCOUNT>",
-      "automountServiceAccountToken": true,
-      "containers":[{"name":"box","image":"busybox","args":["sleep","3600"],
-        "env":[{"name":"AZURE_CLIENT_ID","value":"<UAMI_CLIENT_ID>"}]}]
-    }}'
-# check the token was injected
-kubectl exec -n <NAMESPACE> wi-smoke -- ls /var/run/secrets/azure/tokens
-kubectl exec -n <NAMESPACE> wi-smoke -- sh -c "cat /var/run/secrets/azure/tokens/azure-identity-token | head -c 60 && echo"
-
-If wi-smoke has the token file, your WI wiring is good; then focus back on your app’s code/permissions.
-If it doesn’t, re-check SA annotation, pod label, serviceAccountName, and webhook.
-
-7) Double-check the federated credential “subject” matches
-
-# Should be exactly:
-system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>
-
-Any mismatch in namespace or SA name prevents the exchange.
-
+# Env var set?
+kubectl set env deployment/"$DEPLOYMENT" -n "$NAMESPACE" --list | grep AZURE_CLIENT_ID
+```
 
 ---
 
-Fill <NAMESPACE>, <SERVICE_ACCOUNT>, <DEPLOYMENT>, and <UAMI_CLIENT_ID> with your values and run these.
-Tell me which step first fails (missing label/env, no projected token, automount=false, etc.), and I’ll zero in on the fix.
+## 2) Federated Credential (on the **UAMI**)
 
+> Entra will only exchange the pod’s SA token for the UAMI **if** the FC matches **issuer/subject/audience**.
 
+```bash
+# 2.1 List FCs on the UAMI
+az identity federated-credential list -g "$UAMI_RG" -n "$UAMI_NAME" -o table
 
-Got it — since you’ve already annotated the ServiceAccount, the second step is to make sure your Deployment’s pod template:
-
-1. Uses that ServiceAccount (probably default in your case).
-
-
-2. Has the Workload Identity opt-in label.
-
-
-3. Has AZURE_CLIENT_ID set so your app picks the right identity.
-
-
-
-Here are the exact commands:
-
-
----
-
-1️⃣ Set the Deployment to use the ServiceAccount
-
-kubectl patch deploy <DEPLOYMENT_NAME> -n webui-internal \
-  -p '{"spec":{"template":{"spec":{"serviceAccountName":"default"}}}}'
-
-
----
-
-2️⃣ Add the Workload Identity label to the pod template
-
-kubectl patch deploy <DEPLOYMENT_NAME> -n webui-internal \
-  -p '{"spec":{"template":{"metadata":{"labels":{"azure.workload.identity/use":"true"}}}}}'
-
-
----
-
-3️⃣ Set the AZURE_CLIENT_ID environment variable
-
-kubectl set env deployment/<DEPLOYMENT_NAME> -n webui-internal AZURE_CLIENT_ID=<UAMI_CLIENT_ID>
-
-Replace <UAMI_CLIENT_ID> with your secrets identity’s client ID.
-
-
----
-
-4️⃣ Restart the deployment to apply changes
-
-kubectl rollout restart deploy/<DEPLOYMENT_NAME> -n webui-internal
-kubectl rollout status  deploy/<DEPLOYMENT_NAME> -n webui-internal
-
-
----
-
-Once this is done, your pods should:
-
-Run as the annotated ServiceAccount.
-
-Get the projected /var/run/secrets/azure/tokens/azure-identity-token file.
-
-Use the correct UAMI to access Key Vault.
-
-
-Do you want me to give you the same set of commands for your api namespace deployment as well so both workloads are wired identically?
-
-
-
-
-
-
-----------
-
-
-
-Here’s your full debug + wiring checklist in Markdown format with all sensitive values replaced by placeholders.
-
-
----
-
-AKS Workload Identity Debug & Wiring Checklist
-
-0️⃣ Check Deployment Spec
-
-# Show ServiceAccount name, labels, automount flag
-kubectl get deploy <DEPLOYMENT_NAME> -n <NAMESPACE> \
-  -o jsonpath='{.spec.template.spec.serviceAccountName}{"\n"}{.spec.template.metadata.labels}{"\n"}{.spec.template.spec.automountServiceAccountToken}{"\n"}'
-
-# Show if AZURE_CLIENT_ID env is set
-kubectl set env deployment/<DEPLOYMENT_NAME> -n <NAMESPACE> --list | grep AZURE_CLIENT_ID || true
-
-✅ Expect:
-
-serviceAccountName = <SERVICE_ACCOUNT> (matches FC subject)
-
-Labels include "azure.workload.identity/use":"true"
-
-automountServiceAccountToken is true or blank
-
-AZURE_CLIENT_ID is set to <UAMI_CLIENT_ID>
-
-
-
----
-
-1️⃣ Ensure Deployment is Wired Correctly
-
-# Set serviceAccountName & automount token
-kubectl patch deploy <DEPLOYMENT_NAME> -n <NAMESPACE> \
-  -p '{"spec":{"template":{"spec":{"serviceAccountName":"<SERVICE_ACCOUNT>","automountServiceAccountToken":true}}}}'
-
-# Add Workload Identity label
-kubectl patch deploy <DEPLOYMENT_NAME> -n <NAMESPACE> \
-  -p '{"spec":{"template":{"metadata":{"labels":{"azure.workload.identity/use":"true"}}}}}'
-
-# Set AZURE_CLIENT_ID env
-kubectl set env deployment/<DEPLOYMENT_NAME> -n <NAMESPACE> AZURE_CLIENT_ID=<UAMI_CLIENT_ID>
-
-# Restart deployment
-kubectl rollout restart deploy/<DEPLOYMENT_NAME> -n <NAMESPACE>
-kubectl rollout status  deploy/<DEPLOYMENT_NAME> -n <NAMESPACE>
-
-
----
-
-2️⃣ Verify Workload Identity Webhook
-
-kubectl get mutatingwebhookconfigurations | grep -i workload || true
-kubectl get pods -A | grep -i workload-identity || true
-
-✅ You should see Azure Workload Identity webhook resources and pods running.
-
-
----
-
-3️⃣ Test Token Injection With a Smoke Pod
-
-kubectl run wi-smoke -n <NAMESPACE> \
-  --image=busybox --restart=Never --command -- sleep 600 \
-  --overrides '{
-    "apiVersion":"v1",
-    "metadata":{"labels":{"azure.workload.identity/use":"true"}},
-    "spec":{
-      "serviceAccountName":"<SERVICE_ACCOUNT>",
-      "automountServiceAccountToken": true,
-      "containers":[{"name":"box","image":"busybox","args":["sleep","600"],
-        "env":[{"name":"AZURE_CLIENT_ID","value":"<UAMI_CLIENT_ID>"}]}]
-    }}'
-
-# Check token exists
-kubectl exec -n <NAMESPACE> wi-smoke -- ls /var/run/secrets/azure/tokens
-
-# View token contents (issuer, subject, audience)
-kubectl exec -n <NAMESPACE> wi-smoke -- sh -c 'cat /var/run/secrets/azure/tokens/azure-identity-token'
-
-✅ Expect:
-
-iss = <AKS_OIDC_ISSUER_URL> (matches FC issuer)
-
-sub = system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>
-
-aud includes api://AzureADTokenExchange
-
-
-
----
-
-4️⃣ Confirm Federated Credential in Azure
-
-# Get AKS OIDC issuer
-ISSUER=$(az aks show -g <AKS_RESOURCE_GROUP> -n <AKS_CLUSTER_NAME> --query oidcIssuerProfile.issuerUrl -o tsv)
-echo "$ISSUER"
-
-# List FCs on UAMI
-az identity federated-credential list -g <UAMI_RESOURCE_GROUP> -n <UAMI_NAME> -o table
-
-# Show details for a specific FC
-az identity federated-credential show \
-  -g <UAMI_RESOURCE_GROUP> -n <UAMI_NAME> \
+# 2.2 Inspect one FC (replace <FC_NAME>)
+az identity federated-credential show -g "$UAMI_RG" -n "$UAMI_NAME" \
   --federated-credential-name <FC_NAME> \
   --query "{issuer:properties.issuer,subject:properties.subject,audience:properties.audience}"
+```
 
 ✅ Expect:
+- `issuer` = `$ISSUER`  
+- `subject` = `system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>` (e.g. `system:serviceaccount:webui-internal:default`)  
+- `audience` includes `api://AzureADTokenExchange`
 
-issuer matches $ISSUER
+**If mismatch, (re)create with exact values:**
 
-subject = system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>
+```bash
+# (Optional) Delete the incorrect FC (no patch support in some CLI versions)
+az identity federated-credential delete -g "$UAMI_RG" -n "$UAMI_NAME" \
+  --federated-credential-name <FC_NAME> 2>/dev/null || true
 
-audience includes api://AzureADTokenExchange
-
-
-
----
-
-5️⃣ Check Logs for CrashLoopBackOff
-
-# Get pod name
-POD=$(kubectl get pods -n <NAMESPACE> -l app=<APP_LABEL> -o jsonpath='{.items[0].metadata.name}')
-
-# Previous logs (before restart)
-kubectl logs $POD -n <NAMESPACE> --previous || true
-
-# Pod description (look for projected volume "azure-identity-token")
-kubectl describe pod $POD -n <NAMESPACE> | sed -n '1,220p'
-
+# Create FC with the exact issuer/subject/audience
+az identity federated-credential create \
+  -g "$UAMI_RG" -n "$UAMI_NAME" \
+  --federated-credential-name <FC_NAME> \
+  --issuer "$ISSUER" \
+  --subject "system:serviceaccount:$NAMESPACE:$SERVICE_ACCOUNT" \
+  --audience api://AzureADTokenExchange
+```
 
 ---
 
-6️⃣ Network / Private Endpoint DNS Check
+## 3) Key Vault Authorization (Azure RBAC, **data-plane**)
 
-(Only if RBAC & token injection are good)
+> Access Policies must be disabled (you’re using **Azure RBAC**).
 
-kubectl run dnscheck -n <NAMESPACE> --image=busybox --restart=Never --command -- sh -c "sleep 300"
-kubectl exec -n <NAMESPACE> dnscheck -- nslookup <KEYVAULT_NAME>.vault.azure.net
-kubectl delete pod dnscheck -n <NAMESPACE> --ignore-not-found
+```bash
+# 3.1 Vault uses RBAC?
+az keyvault show -n "$KV_NAME" --query properties.enableRbacAuthorization -o tsv
+# expect: true
 
-✅ Expect:
+# 3.2 List role assignments at the vault scope for the **UAMI principalId**
+az role assignment list --assignee "$UAMI_PRINCIPAL_ID" --scope "$VAULT_ID" \
+  --query "[].{role:roleDefinitionName,scope:scope}" -o table
+# expect: "Key Vault Secrets User"  scope = /subscriptions/.../vaults/<KV_NAME>
 
-CNAME to <KEYVAULT_NAME>.privatelink.vaultcore.azure.net
+# 3.3 (If missing) assign Key Vault Secrets User at vault scope (idempotent)
+az role assignment create --assignee "$UAMI_PRINCIPAL_ID" \
+  --role "Key Vault Secrets User" --scope "$VAULT_ID"
+```
 
-Private IP in your VNet range
-
-
-
----
-
-What the Results Mean
-
-Smoke pod token file present & correct iss/sub/aud → Workload Identity wiring is OK → If still 403, check Key Vault RBAC, role scope, and network.
-
-Smoke pod missing token file → Wiring issue (labels, SA annotation, automount, webhook).
-
-Token OK but DNS resolves to public IP → Private Endpoint/DNS issue.
-
-App crashes but smoke pod OK → App crash unrelated to Workload Identity (check logs).
-
-
+> Notes  
+> • Use **UAMI principalId** for RBAC; use **UAMI clientId** for SA annotation and `AZURE_CLIENT_ID`.  
+> • If your code **lists** secrets, **Secrets User** is sufficient (has `get` + `list`). If you used a **custom role**, ensure it includes `Microsoft.KeyVault/vaults/secrets/read` and list.
 
 ---
 
-Do you want me to also make you a minimal Helm values/YAML template so this wiring is always applied automatically during deploys? That would prevent these manual patch steps in the future.
+## 4) Minimal, Decisive Checks (Auth, Identity, & Root-Cause)
 
+### 4.1 Workload Identity token & intended UAMI present in the pod
 
+```bash
+# Pick a pod of the deployment (adjust selector to your labels if needed)
+POD=$(kubectl get pods -n "$NAMESPACE" -l app="$DEPLOYMENT" -o jsonpath='{.items[0].metadata.name}')
+echo "$POD"
 
-kubectl run dns-test --rm -it --image=mcr.microsoft.com/aks/fundamental/base-ubuntu:v0.0.11 -- bash
-apt update && apt install -y dnsutils
-nslookup mif-cc-fasat-dev2-akv.vault.azure.net
+# OIDC token projected? (should show azure-identity-token)
+kubectl exec -n "$NAMESPACE" "$POD" -- ls /var/run/secrets/azure/tokens || true
 
+# The UAMI you intend?
+kubectl exec -n "$NAMESPACE" "$POD" -- printenv AZURE_CLIENT_ID || true
+```
 
+> If the pod has multiple containers, add `-c <CONTAINER_NAME>` to the `kubectl exec` commands.
 
+### 4.2 Ground Truth: What Key Vault Saw (most useful)
 
-Looks like your kubectl run dns-test command is timing out before it can start the pod.
-That usually happens if:
+> Enable AuditEvent once, then query results in **Log Analytics**.
 
-1. Image pull takes too long – mcr.microsoft.com/aks/fundamental/base-ubuntu:v0.0.11 can be slow to pull on the first run.
+```bash
+# Enable KV diagnostics (one-time). Skip if already configured.
+az monitor diagnostic-settings create \
+  --resource "$VAULT_ID" \
+  --name kv-audit \
+  --workspace "$LOG_ANALYTICS_WORKSPACE_RESOURCE_ID" \
+  --logs '[{"category":"AuditEvent","enabled":true}]'
+```
 
+**KQL to run in the workspace → Logs:**
 
-2. Cluster has no outbound internet – since your AKS might be in a private network without an outbound route to mcr.microsoft.com.
+```kusto
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.KEYVAULT" and Category == "AuditEvent"
+| where OperationName contains "Secret"
+| project TimeGenerated, OperationName, ResultType, ResultDescription,
+          identity_principalId_g, identity_claim_appid_g, identity_claim_sub_s, CallerIPAddress
+| top 50 by TimeGenerated desc
+```
 
+Interpretation:
+- `identity_claim_appid_g` → **clientId** (should equal **UAMI_CLIENT_ID**)
+- `identity_principalId_g` → **principalId** (should equal **UAMI_PRINCIPAL_ID**)
+- `identity_claim_sub_s` → **K8s SA subject** (should be `system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>`)
+- `ResultDescription`:
+  - `AccessDenied` → **RBAC** issue (role/scope/principal)
+  - `ForbiddenByFirewall` / `IpNotAllowed` → **Network/DNS** (Private Endpoint/DNS path)
 
+### 4.3 (Optional) DNS Yes/No Without Pulling New Images
 
-Since your AKS is in a private VNet with a Key Vault private endpoint, there's a good chance the pod cannot pull images from the internet unless you have:
+> From **any existing pod** in the same namespace (no interactive shell needed):
 
-An Azure Container Registry inside the VNet or
+```bash
+kubectl exec -n "$NAMESPACE" "$POD" -- getent hosts "$KV_NAME.vault.azure.net" || \
+kubectl exec -n "$NAMESPACE" "$POD" -- host "$KV_NAME.vault.azure.net" || \
+kubectl exec -n "$NAMESPACE" "$POD" -- ping -c1 "$KV_NAME.vault.azure.net"
+```
 
-A Microsoft Container Registry FQDN allowed via a firewall/proxy.
+- **Private IP (10.x/172.16/192.168)** → Private Endpoint/DNS path OK  
+- **Public IP (~20.x) or NXDOMAIN** → DNS/zone link issue (even if SP worked previously)
 
-
-
----
-
-Two ways to test DNS without external image pulls
-
-Option 1 – Use an image already in your cluster If you already have any running pod in that namespace, you can exec into it:
-
-kubectl exec -it <pod-name> -n webui-internal -- sh
-nslookup mif-cc-fasat-dev2-akv.vault.azure.net
-
-Option 2 – Use busybox from AKS addon images
-
-kubectl run dns-test --image=busybox:1.28 --restart=Never -it --rm -- nslookup mif-cc-fasat-dev2-akv.vault.azure.net
-
-If even busybox can’t be pulled, then you’ll need to use an existing container in your cluster for the DNS test.
-
-
----
-
-If this DNS check returns a private IP (10.x.x.x), DNS is fine and your CrashLoopBackOff is likely an identity or token binding issue.
-If it returns a public IP, then the pod is bypassing your private DNS zone.
-
-Do you want me to give you a quick portal-only way to confirm DNS without touching pods? That could avoid these pull issues entirely.
-
-
-
-
-I see from your screenshot that the ingress pod you tried to exec into doesn’t have a shell (sh) or nslookup installed, so it failed.
-You’ve got two practical options now:
-
-
----
-
-Option 1 — Use an ephemeral debug container (no changes to existing pod image)
-
-This lets you temporarily attach a container with debugging tools to your ingress pod:
-
-kubectl debug -it -n webui-internal \
-  ingressgateway-594757d48f-cflh7 \
-  --image=mcr.microsoft.com/aks/fundamental/base-ubuntu:v0.0.11 -- bash
-
-Then inside the ephemeral container:
-
-apt-get update && apt-get install -y dnsutils curl
-nslookup <KEYVAULT_NAME>.vault.azure.net
-curl -I https://<KEYVAULT_NAME>.vault.azure.net/
-
+> Your app should use the **public** FQDN: `https://<KV_NAME>.vault.azure.net`. DNS will CNAME it to the `privatelink` host that resolves to the **private IP**.
 
 ---
 
-Option 2 — Run a standalone debug pod in same namespace
+## 5) Common Pitfalls (Quick Checklist)
 
-This avoids touching ingress entirely but still uses the same network path:
-
-kubectl run dns-test \
-  -n webui-internal \
-  --rm -it \
-  --image=mcr.microsoft.com/aks/fundamental/base-ubuntu:v0.0.11 \
-  -- bash
-
-Then inside:
-
-apt-get update && apt-get install -y dnsutils curl
-nslookup <KEYVAULT_NAME>.vault.azure.net
-curl -I https://<KEYVAULT_NAME>.vault.azure.net/
-
+- FC **subject** must **exactly** equal `system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>`.
+- SA **annotation** & pod **label** missing → token not projected.
+- `AZURE_CLIENT_ID` not set → SDK may not pick your UAMI.
+- KV role assigned to **wrong principal** (e.g., used `clientId` instead of `principalId`) or **wrong scope** (RG only).
+- KV **Public network access = Disabled** but **Private DNS** not linked to **AKS VNet** (A record for `<KV_NAME>` missing/incorrect).
+- App calling the wrong host (use `https://<KV_NAME>.vault.azure.net`, **not** `privatelink` FQDN directly).
 
 ---
 
-Since your goal is just to check DNS resolution + connectivity to Key Vault, either option will work.
-If you want to reuse ingress for the test, Option 1 is cleaner.
+## 6) If It Still Fails — Single-Line Fixes per Root Cause
 
-Do you want me to prepare the expected DNS output so you’ll know instantly if it’s hitting the private endpoint?
+- **RBAC (`AccessDenied`)**  
+  ```bash
+  az role assignment create --assignee "$UAMI_PRINCIPAL_ID" --role "Key Vault Secrets User" --scope "$VAULT_ID"
+  ```
 
+- **Network (`ForbiddenByFirewall` / `IpNotAllowed`)**  
+  In Portal: Private DNS zone `privatelink.vaultcore.azure.net` →  
+  • **Record sets**: A-record `<KV_NAME>` → **PE private IP**  
+  • **Virtual network links**: ensure the **AKS nodes’ VNet** is linked
 
+- **SDK not selecting UAMI**  
+  ```bash
+  kubectl set env deployment/"$DEPLOYMENT" -n "$NAMESPACE" AZURE_CLIENT_ID="$UAMI_CLIENT_ID"
+  kubectl rollout restart deploy/"$DEPLOYMENT" -n "$NAMESPACE"
+  ```
 
+---
 
+## 7) Optional: One-Shot Smoke Pod (to validate WI injection only)
 
+```bash
+kubectl run wi-smoke -n "$NAMESPACE" --image=busybox --restart=Never --command \
+  -- sh -c 'sleep 600' \
+  --overrides '{
+    "apiVersion":"v1",
+    "metadata":{"labels":{"azure.workload.identity/use":"true"}},
+    "spec":{
+      "serviceAccountName":"'"$SERVICE_ACCOUNT"'",
+      "automountServiceAccountToken": true,
+      "containers":[{"name":"box","image":"busybox","args":["sh","-c","sleep 600"],
+        "env":[{"name":"AZURE_CLIENT_ID","value":"'"$UAMI_CLIENT_ID"'"}]}]
+    }}'
 
+# Token must exist:
+kubectl exec -n "$NAMESPACE" wi-smoke -- ls /var/run/secrets/azure/tokens || true
+kubectl delete pod wi-smoke -n "$NAMESPACE" --ignore-not-found
+```
+
+---
+
+### TL;DR Execution Order
+
+1. **Section 0 & Derive** → fill variables, compute IDs.  
+2. **Section 1** → annotate SA, patch Deployment, set env, restart.  
+3. **Section 2** → verify (or recreate) Federated Credential (issuer/subject/audience).  
+4. **Section 3** → confirm RBAC on **vault** to **UAMI principalId** (Secrets User).  
+5. **Section 4** → decisive checks: pod token/env + KV AuditEvent; optional DNS yes/no.  
+6. Fix per **Section 6** based on the exact result (`AccessDenied` vs `ForbiddenByFirewall`).
+```
+
+# Save the file
+file_path = '/mnt/data/aks_workload_identity_keyvault_runbook.md'
+with open(file_path, 'w') as f:
+    f.write(md_content)
+
+file_path
