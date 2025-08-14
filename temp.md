@@ -1,4 +1,4 @@
-8
+68
 1) Check the ServiceAccount wiring
 
 # list SAs in your namespace
@@ -352,6 +352,12 @@ App crashes but smoke pod OK → App crash unrelated to Workload Identity (check
 ---
 
 Do you want me to also make you a minimal Helm values/YAML template so this wiring is always applied automatically during deploys? That would prevent these manual patch steps in the future.
+
+
+
+kubectl run dns-test --rm -it --image=mcr.microsoft.com/aks/fundamental/base-ubuntu:v0.0.11 -- bash
+apt update && apt install -y dnsutils
+nslookup mif-cc-fasat-dev2-akv.vault.azure.net
 
 
 
