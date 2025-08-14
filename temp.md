@@ -1,94 +1,116 @@
-If PE + RBAC look “correct” in Portal but you still see 403, it’s almost always one of these:
 
-1. Wrong role (management-plane vs data-plane)
-Folks often assign Reader or Key Vault Reader (management plane) which cannot read secrets. For secrets you need a data-plane role like:
+1) Check the ServiceAccount wiring
 
-Key Vault Secrets User (get + list)
+# list SAs in your namespace
+kubectl get sa -n <NAMESPACE>
 
-Key Vault Secrets Officer (broader)
+# show the SA you expect the pod to use
+kubectl get sa <SERVICE_ACCOUNT> -n <NAMESPACE> -o yaml | sed -n '1,120p'
+# ✅ Look for:
+# annotations:
+#   azure.workload.identity/client-id: <UAMI_CLIENT_ID>
 
-Or a custom role that includes Microsoft.KeyVault/vaults/secrets/read
+2) Check your Deployment’s pod template (labels, SA, env)
+
+# Which SA is your deployment using? Is WI label present?
+kubectl get deploy <DEPLOYMENT> -n <NAMESPACE> \
+  -o jsonpath='{.spec.template.spec.serviceAccountName}{"\n"}{.spec.template.metadata.labels}{"\n"}{.spec.template.spec.automountServiceAccountToken}{"\n"}'
+
+# Do containers have AZURE_CLIENT_ID?
+kubectl set env deployment/<DEPLOYMENT> -n <NAMESPACE> --list | grep AZURE_CLIENT_ID
+
+✅ You want:
+
+serviceAccountName = <SERVICE_ACCOUNT> (matches your federated credential’s subject)
+
+labels include: azure.workload.identity/use: true
+
+automountServiceAccountToken not set to false (if it’s false, that breaks WI)
+
+AZURE_CLIENT_ID is set to your UAMI client ID
 
 
+3) Check the Workload Identity webhook is active
 
-2. Assigned to the wrong principal
-Use the UAMI’s principalId (a.k.a. objectId), not just the clientId, when checking assignments.
+kubectl get mutatingwebhookconfigurations | grep -i workload
+kubectl get pods -A | grep -i workload-identity
 
+(You should see the WI mutating webhook installed/ready.)
 
-3. Wrong scope
-Assign at the vault resource (or higher scope with inheritance). Double-check inheritance isn’t blocked.
+4) Inspect the crashing pod without exec
 
+# pick the newest pod for the deployment
+POD=$(kubectl get pods -n <NAMESPACE> -l app=<DEPLOYMENT> \
+  -o jsonpath='{.items[-1].metadata.name}')
 
-4. Your app is doing list
-Some agents (Secret Store CSI Driver / External Secrets) call list first. If your role only allows get, you’ll still get 403.
+# see events + injected volumes
+kubectl describe pod $POD -n <NAMESPACE> | sed -n '1,200p'
 
+# get previous container logs (from the last crash)
+kubectl logs $POD -n <NAMESPACE> --previous
 
-5. Private endpoint DNS (less likely if SP worked before, but quick to verify)
-The vault name should resolve to a private IP via privatelink.vaultcore.azure.net.
+✅ In describe, look for a projected volume named like azure-identity-token mounted at
+/var/run/secrets/azure/tokens. If that volume/mount is missing, the webhook didn’t inject → wiring issue.
 
+5) Patch fixes (if anything above is missing)
 
+5a) Annotate the ServiceAccount (idempotent)
+
+kubectl annotate sa <SERVICE_ACCOUNT> -n <NAMESPACE> \
+  azure.workload.identity/client-id=<UAMI_CLIENT_ID> --overwrite
+
+5b) Add the opt-in label to the Deployment’s pod template
+
+kubectl patch deploy <DEPLOYMENT> -n <NAMESPACE> \
+  -p '{"spec":{"template":{"metadata":{"labels":{"azure.workload.identity/use":"true"}}}}}'
+
+5c) Ensure AZURE_CLIENT_ID env is present
+
+kubectl set env deployment/<DEPLOYMENT> -n <NAMESPACE> AZURE_CLIENT_ID=<UAMI_CLIENT_ID>
+
+5d) Remove/flip automount=false if present
+
+# if you saw 'automountServiceAccountToken: false', turn it on
+kubectl patch deploy <DEPLOYMENT> -n <NAMESPACE> \
+  -p '{"spec":{"template":{"spec":{"automountServiceAccountToken": true}}}}'
+
+5e) Roll the pods
+
+kubectl rollout restart deploy/<DEPLOYMENT> -n <NAMESPACE>
+kubectl rollout status  deploy/<DEPLOYMENT> -n <NAMESPACE>
+
+6) Create a one-off smoke pod to validate WI (no app needed)
+
+This lets you check token projection even if your app keeps crashing.
+
+kubectl run wi-smoke -n <NAMESPACE> \
+  --image=busybox --restart=Never --command -- sleep 3600 \
+  --overrides '{
+    "apiVersion":"v1",
+    "metadata":{"labels":{"azure.workload.identity/use":"true"}},
+    "spec":{
+      "serviceAccountName":"<SERVICE_ACCOUNT>",
+      "automountServiceAccountToken": true,
+      "containers":[{"name":"box","image":"busybox","args":["sleep","3600"],
+        "env":[{"name":"AZURE_CLIENT_ID","value":"<UAMI_CLIENT_ID>"}]}]
+    }}'
+# check the token was injected
+kubectl exec -n <NAMESPACE> wi-smoke -- ls /var/run/secrets/azure/tokens
+kubectl exec -n <NAMESPACE> wi-smoke -- sh -c "cat /var/run/secrets/azure/tokens/azure-identity-token | head -c 60 && echo"
+
+If wi-smoke has the token file, your WI wiring is good; then focus back on your app’s code/permissions.
+If it doesn’t, re-check SA annotation, pod label, serviceAccountName, and webhook.
+
+7) Double-check the federated credential “subject” matches
+
+# Should be exactly:
+system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>
+
+Any mismatch in namespace or SA name prevents the exchange.
 
 
 ---
 
-Fast, precise checks (copy/paste with placeholders)
-
-A) Confirm which roles the UAMI actually has at the vault
-
-KV_NAME=<YOUR_KV_NAME>
-UAMI_RG=<UAMI_RESOURCE_GROUP>
-UAMI_NAME=<UAMI_NAME>
-
-VAULT_ID=$(az keyvault show -n $KV_NAME --query id -o tsv)
-# get UAMI ids
-read CLIENT_ID PRINCIPAL_ID <<<$(az identity show -g $UAMI_RG -n $UAMI_NAME --query "[clientId,principalId]" -o tsv)
-echo "UAMI clientId=$CLIENT_ID  principalId=$PRINCIPAL_ID"
-
-# list role assignments for THIS identity at the VAULT scope
-az role assignment list --assignee $PRINCIPAL_ID --scope $VAULT_ID \
-  --query "[].{role:roleDefinitionName,scope:scope,roleId:roleDefinitionId}" -o table
-
-👉 If you don’t see Key Vault Secrets User/Officer (or a custom role), that’s the issue.
-
-B) If you see a custom role or you’re unsure it’s data-plane, inspect its permissions
-
-ROLE_DEF_ID=<roleDefinitionId from the previous command>
-ROLE_NAME=$(az role definition list --ids $ROLE_DEF_ID --query "[0].roleName" -o tsv)
-echo "Role: $ROLE_NAME"
-az role definition list --ids $ROLE_DEF_ID --query "[0].permissions[0].dataActions"
-
-You should see Microsoft.KeyVault/vaults/secrets/read (and possibly /delete, /recover, etc.).
-If the dataActions array is empty, that role will 403 on secrets.
-
-C) If you need to grant the correct data-plane role
-
-# Grant Key Vault Secrets User (get + list) at vault scope
-az role assignment create \
-  --assignee $PRINCIPAL_ID \
-  --role "Key Vault Secrets User" \
-  --scope $VAULT_ID
-
-(Wait a few minutes for propagation.)
-
-D) Quick DNS sanity (optional)
-
-# inside any pod
-kubectl exec -it -n <NAMESPACE> <POD> -- sh -c "nslookup ${KV_NAME}.vault.azure.net"
-# Expect CNAME to <KV_NAME>.privatelink.vaultcore.azure.net -> Private IP (10.x/172.16/192.168.x)
-
-E) See exactly what Key Vault thinks (Diagnostic logs)
-
-If available, enable Key Vault Diagnostic setting → AuditEvent → Log Analytics and check the record:
-
-identity: should show your UAMI principal/object id
-
-result: Forbidden + reason (e.g., AccessDenied vs ForbiddenByFirewall)
-
-
-
----
-
-TL;DR what I suspect in your case
-
-Because SP “used to work” and now WI gets 403, the most common cause is role mismatch: you granted something like Reader/Key Vault Reader (management plane) to the UAMI. Switch to Key Vault Secrets User (data-plane) at the vault scope and it’ll unblock. If you already have that role, run the commands above and paste the outputs for (A) and (B); we’ll pinpoint the exact field that’s off.
+Fill <NAMESPACE>, <SERVICE_ACCOUNT>, <DEPLOYMENT>, and <UAMI_CLIENT_ID> with your values and run these.
+Tell me which step first fails (missing label/env, no projected token, automount=false, etc.), and I’ll zero in on the fix.
 
