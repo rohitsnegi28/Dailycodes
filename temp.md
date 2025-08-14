@@ -362,3 +362,48 @@ nslookup mif-cc-fasat-dev2-akv.vault.azure.net
 
 
 
+Looks like your kubectl run dns-test command is timing out before it can start the pod.
+That usually happens if:
+
+1. Image pull takes too long – mcr.microsoft.com/aks/fundamental/base-ubuntu:v0.0.11 can be slow to pull on the first run.
+
+
+2. Cluster has no outbound internet – since your AKS might be in a private network without an outbound route to mcr.microsoft.com.
+
+
+
+Since your AKS is in a private VNet with a Key Vault private endpoint, there's a good chance the pod cannot pull images from the internet unless you have:
+
+An Azure Container Registry inside the VNet or
+
+A Microsoft Container Registry FQDN allowed via a firewall/proxy.
+
+
+
+---
+
+Two ways to test DNS without external image pulls
+
+Option 1 – Use an image already in your cluster If you already have any running pod in that namespace, you can exec into it:
+
+kubectl exec -it <pod-name> -n webui-internal -- sh
+nslookup mif-cc-fasat-dev2-akv.vault.azure.net
+
+Option 2 – Use busybox from AKS addon images
+
+kubectl run dns-test --image=busybox:1.28 --restart=Never -it --rm -- nslookup mif-cc-fasat-dev2-akv.vault.azure.net
+
+If even busybox can’t be pulled, then you’ll need to use an existing container in your cluster for the DNS test.
+
+
+---
+
+If this DNS check returns a private IP (10.x.x.x), DNS is fine and your CrashLoopBackOff is likely an identity or token binding issue.
+If it returns a public IP, then the pod is bypassing your private DNS zone.
+
+Do you want me to give you a quick portal-only way to confirm DNS without touching pods? That could avoid these pull issues entirely.
+
+
+
+
+
