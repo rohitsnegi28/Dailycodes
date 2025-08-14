@@ -1,4 +1,4 @@
-
+8
 1) Check the ServiceAccount wiring
 
 # list SAs in your namespace
@@ -113,4 +113,69 @@ Any mismatch in namespace or SA name prevents the exchange.
 
 Fill <NAMESPACE>, <SERVICE_ACCOUNT>, <DEPLOYMENT>, and <UAMI_CLIENT_ID> with your values and run these.
 Tell me which step first fails (missing label/env, no projected token, automount=false, etc.), and I’ll zero in on the fix.
+
+
+
+Got it — since you’ve already annotated the ServiceAccount, the second step is to make sure your Deployment’s pod template:
+
+1. Uses that ServiceAccount (probably default in your case).
+
+
+2. Has the Workload Identity opt-in label.
+
+
+3. Has AZURE_CLIENT_ID set so your app picks the right identity.
+
+
+
+Here are the exact commands:
+
+
+---
+
+1️⃣ Set the Deployment to use the ServiceAccount
+
+kubectl patch deploy <DEPLOYMENT_NAME> -n webui-internal \
+  -p '{"spec":{"template":{"spec":{"serviceAccountName":"default"}}}}'
+
+
+---
+
+2️⃣ Add the Workload Identity label to the pod template
+
+kubectl patch deploy <DEPLOYMENT_NAME> -n webui-internal \
+  -p '{"spec":{"template":{"metadata":{"labels":{"azure.workload.identity/use":"true"}}}}}'
+
+
+---
+
+3️⃣ Set the AZURE_CLIENT_ID environment variable
+
+kubectl set env deployment/<DEPLOYMENT_NAME> -n webui-internal AZURE_CLIENT_ID=<UAMI_CLIENT_ID>
+
+Replace <UAMI_CLIENT_ID> with your secrets identity’s client ID.
+
+
+---
+
+4️⃣ Restart the deployment to apply changes
+
+kubectl rollout restart deploy/<DEPLOYMENT_NAME> -n webui-internal
+kubectl rollout status  deploy/<DEPLOYMENT_NAME> -n webui-internal
+
+
+---
+
+Once this is done, your pods should:
+
+Run as the annotated ServiceAccount.
+
+Get the projected /var/run/secrets/azure/tokens/azure-identity-token file.
+
+Use the correct UAMI to access Key Vault.
+
+
+Do you want me to give you the same set of commands for your api namespace deployment as well so both workloads are wired identically?
+
+
 
