@@ -1,283 +1,118 @@
-"""# AKS Workload Identity → Azure Key Vault (End-to-End Runbook)
+Totally fine — you don’t need the Flux CLI on your laptop to fix this.
+Everything below uses only kubectl (plus normal Git PRs if you want to make it permanent).
 
-> A single, copy-pasteable guide to wire your pods (Kubernetes ServiceAccounts) to a **User-Assigned Managed Identity (UAMI)** via **AKS Workload Identity**, authorize against **Azure Key Vault** using **Azure RBAC**, and **debug** issues.  
-> All sensitive values are placeholders — replace anything in `<>`.
-
----
-
-## 0) Fill These Variables (once)
-
-```bash
-# ====== REQUIRED (you fill) ======
-NAMESPACE="<YOUR_NAMESPACE>"                       # e.g. webui-internal
-DEPLOYMENT="<YOUR_DEPLOYMENT_NAME>"                # e.g. app-mlc-fasat-web
-SERVICE_ACCOUNT="<YOUR_SERVICEACCOUNT>"            # e.g. default
-UAMI_RG="<UAMI_RESOURCE_GROUP>"                    # RG of your user-assigned managed identity
-UAMI_NAME="<UAMI_NAME>"                            # name of the UAMI ("secrets identity")
-KV_NAME="<YOUR_KEYVAULT_NAME>"                     # e.g. mif-cc-fasat-dev2-akv
-AKS_RG="<AKS_RESOURCE_GROUP>"                      # AKS resource group
-AKS_NAME="<AKS_CLUSTER_NAME>"                      # AKS cluster name
-# Optional (for diagnostics / DNS checks)
-DNS_RG="<DNS_RESOURCE_GROUP>"
-LOG_ANALYTICS_WORKSPACE_RESOURCE_ID="<LAW_RESOURCE_ID>"
-# =================================
-```
-
-### Derive These (CLI computes them)
-
-```bash
-# Managed Identity (UAMI) IDs
-read UAMI_CLIENT_ID UAMI_PRINCIPAL_ID <<<$(az identity show -g "$UAMI_RG" -n "$UAMI_NAME" --query "[clientId,principalId]" -o tsv)
-
-# Key Vault resource ID
-VAULT_ID=$(az keyvault show -n "$KV_NAME" --query id -o tsv)
-
-# AKS OIDC issuer (must match Federated Credential issuer)
-ISSUER=$(az aks show -g "$AKS_RG" -n "$AKS_NAME" --query oidcIssuerProfile.issuerUrl -o tsv)
-
-echo "UAMI_CLIENT_ID=$UAMI_CLIENT_ID"
-echo "UAMI_PRINCIPAL_ID=$UAMI_PRINCIPAL_ID"
-echo "VAULT_ID=$VAULT_ID"
-echo "ISSUER=$ISSUER"
-```
 
 ---
 
-## 1) Wire Kubernetes (ServiceAccount + Pod Template + Env)
+What you can do without Flux CLI
 
-> These are idempotent; safe to run again.
+A) Hot-fix now with kubectl only (no Flux, no helm)
 
-```bash
-# 1.1 Annotate the ServiceAccount with the UAMI clientId
-kubectl annotate sa "$SERVICE_ACCOUNT" -n "$NAMESPACE" \
-  azure.workload.identity/client-id="$UAMI_CLIENT_ID" --overwrite
+1. Create the ServiceAccount (the exact name your Deployment expects) and add MI annotations:
 
-# 1.2 Make the Deployment run as that SA, opt in to Workload Identity, and ensure token mount
-kubectl patch deploy "$DEPLOYMENT" -n "$NAMESPACE" \
-  -p '{"spec":{"template":{"spec":{"serviceAccountName":"'"$SERVICE_ACCOUNT"'","automountServiceAccountToken":true}}}}'
 
-kubectl patch deploy "$DEPLOYMENT" -n "$NAMESPACE" \
-  -p '{"spec":{"template":{"metadata":{"labels":{"azure.workload.identity/use":"true"}}}}}'
 
-# 1.3 Help the Azure SDK pick your UAMI (clientId)
-kubectl set env deployment/"$DEPLOYMENT" -n "$NAMESPACE" AZURE_CLIENT_ID="$UAMI_CLIENT_ID"
+# If your controller Deployment expects "akv2k8s-akv2k8s-controller"
+kubectl -n akv2k8s create serviceaccount akv2k8s-akv2k8s-controller
 
-# 1.4 Restart to apply
-kubectl rollout restart deploy/"$DEPLOYMENT" -n "$NAMESPACE"
-kubectl rollout status  deploy/"$DEPLOYMENT" -n "$NAMESPACE"
-```
+# Annotate with your Managed Identity (clientId/tenantId)
+kubectl -n akv2k8s annotate sa akv2k8s-akv2k8s-controller \
+  azure.workload.identity/client-id=<UAMI_CLIENT_ID> \
+  azure.workload.identity/tenant-id=<TENANT_ID> --overwrite
 
-### Quick Verifications (K8s wiring)
+2. Restart the controller & injector so they pick up the SA:
 
-```bash
-# SA shows the annotation?
-kubectl get sa "$SERVICE_ACCOUNT" -n "$NAMESPACE" -o yaml | grep -A1 'azure.workload.identity/client-id'
 
-# Pod template has SA, label, and token automount?
-kubectl get deploy "$DEPLOYMENT" -n "$NAMESPACE" \
-  -o jsonpath='{.spec.template.spec.serviceAccountName}{"\\n"}{.spec.template.metadata.labels}{"\\n"}{.spec.template.spec.automountServiceAccountToken}{"\\n"}' ; echo
 
-# Env var set?
-kubectl set env deployment/"$DEPLOYMENT" -n "$NAMESPACE" --list | grep AZURE_CLIENT_ID
-```
+kubectl -n akv2k8s rollout restart deploy/akv2k8s-akv2k8s-controller   || true
+kubectl -n akv2k8s rollout restart deploy/akv2k8s-akv2k8s-envinjector || true
+kubectl -n akv2k8s rollout status  deploy/akv2k8s-akv2k8s-envinjector
 
----
+3. Validate it’s using MI (not SPN):
 
-## 2) Federated Credential (on the **UAMI**)
 
-> Entra will only exchange the pod’s SA token for the UAMI **if** the FC matches **issuer/subject/audience**.
 
-```bash
-# 2.1 List FCs on the UAMI
-az identity federated-credential list -g "$UAMI_RG" -n "$UAMI_NAME" -o table
+# SA annotations present?
+kubectl -n akv2k8s get sa akv2k8s-akv2k8s-controller -o yaml | grep -A2 'azure.workload.identity'
 
-# 2.2 Inspect one FC (replace <FC_NAME>)
-az identity federated-credential show -g "$UAMI_RG" -n "$UAMI_NAME" \
-  --federated-credential-name <FC_NAME> \
-  --query "{issuer:properties.issuer,subject:properties.subject,audience:properties.audience}"
-```
+# No SPN secret in env; federated token projected?
+kubectl -n akv2k8s exec -it deploy/akv2k8s-akv2k8s-controller -- env \
+ | egrep 'AZURE_CLIENT_SECRET|AZURE_CLIENT_ID|AZURE_FEDERATED_TOKEN_FILE'
+# Expect: NO AZURE_CLIENT_SECRET; seeing CLIENT_ID and FEDERATED_TOKEN_FILE is OK.
 
-✅ Expect:
-- `issuer` = `$ISSUER`  
-- `subject` = `system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>` (e.g. `system:serviceaccount:webui-internal:default`)  
-- `audience` includes `api://AzureADTokenExchange`
+> This gets you running right now. Kubernetes will keep that SA unless someone removes it again.
 
-**If mismatch, (re)create with exact values:**
 
-```bash
-# (Optional) Delete the incorrect FC (no patch support in some CLI versions)
-az identity federated-credential delete -g "$UAMI_RG" -n "$UAMI_NAME" \
-  --federated-credential-name <FC_NAME> 2>/dev/null || true
 
-# Create FC with the exact issuer/subject/audience
-az identity federated-credential create \
-  -g "$UAMI_RG" -n "$UAMI_NAME" \
-  --federated-credential-name <FC_NAME> \
-  --issuer "$ISSUER" \
-  --subject "system:serviceaccount:$NAMESPACE:$SERVICE_ACCOUNT" \
-  --audience api://AzureADTokenExchange
-```
 
 ---
 
-## 3) Key Vault Authorization (Azure RBAC, **data-plane**)
+B) Trigger a Flux/Helm reconcile without the Flux CLI (optional)
 
-> Access Policies must be disabled (you’re using **Azure RBAC**).
+If you need the controllers in-cluster to re-apply the HelmRelease, you can annotate the resources with kubectl:
 
-```bash
-# 3.1 Vault uses RBAC?
-az keyvault show -n "$KV_NAME" --query properties.enableRbacAuthorization -o tsv
-# expect: true
+# Ask Helm Controller to reconcile the HelmRelease
+kubectl -n akv2k8s annotate helmrelease akv2k8s \
+  reconcile.fluxcd.io/requestedAt="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
 
-# 3.2 List role assignments at the vault scope for the **UAMI principalId**
-az role assignment list --assignee "$UAMI_PRINCIPAL_ID" --scope "$VAULT_ID" \
-  --query "[].{role:roleDefinitionName,scope:scope}" -o table
-# expect: "Key Vault Secrets User"  scope = /subscriptions/.../vaults/<KV_NAME>
+# (If needed) Ask Kustomize Controller to rebuild the Kustomization that owns akv2k8s
+kubectl -n flux-system annotate kustomization akv2k8s \
+  kustomize.toolkit.fluxcd.io/reconcileAt="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
 
-# 3.3 (If missing) assign Key Vault Secrets User at vault scope (idempotent)
-az role assignment create --assignee "$UAMI_PRINCIPAL_ID" \
-  --role "Key Vault Secrets User" --scope "$VAULT_ID"
-```
+No Flux CLI required—those annotations are watched by the in-cluster controllers.
 
-> Notes  
-> • Use **UAMI principalId** for RBAC; use **UAMI clientId** for SA annotation and `AZURE_CLIENT_ID`.  
-> • If your code **lists** secrets, **Secrets User** is sufficient (has `get` + `list`). If you used a **custom role**, ensure it includes `Microsoft.KeyVault/vaults/secrets/read` and list.
 
 ---
 
-## 4) Minimal, Decisive Checks (Auth, Identity, & Root-Cause)
+C) Make it permanent via Git (clean GitOps)
 
-### 4.1 Workload Identity token & intended UAMI present in the pod
+Since Flux will always prefer what’s in Git, open a PR that:
 
-```bash
-# Pick a pod of the deployment (adjust selector to your labels if needed)
-POD=$(kubectl get pods -n "$NAMESPACE" -l app="$DEPLOYMENT" -o jsonpath='{.items[0].metadata.name}')
-echo "$POD"
+sets serviceAccount.create: true (or whatever your chart expects),
 
-# OIDC token projected? (should show azure-identity-token)
-kubectl exec -n "$NAMESPACE" "$POD" -- ls /var/run/secrets/azure/tokens || true
+sets serviceAccount.name: akv2k8s-akv2k8s-controller (matching the Deployment),
 
-# The UAMI you intend?
-kubectl exec -n "$NAMESPACE" "$POD" -- printenv AZURE_CLIENT_ID || true
-```
+and (if desired) adds the MI annotations in chart values (or keeps them on the SA you manage yourself).
 
-> If the pod has multiple containers, add `-c <CONTAINER_NAME>` to the `kubectl exec` commands.
 
-### 4.2 Ground Truth: What Key Vault Saw (most useful)
+Until that PR is merged, your manual SA will work; after merge, Flux/Helm will own it.
 
-> Enable AuditEvent once, then query results in **Log Analytics**.
-
-```bash
-# Enable KV diagnostics (one-time). Skip if already configured.
-az monitor diagnostic-settings create \
-  --resource "$VAULT_ID" \
-  --name kv-audit \
-  --workspace "$LOG_ANALYTICS_WORKSPACE_RESOURCE_ID" \
-  --logs '[{"category":"AuditEvent","enabled":true}]'
-```
-
-**KQL to run in the workspace → Logs:**
-
-```kusto
-AzureDiagnostics
-| where ResourceProvider == "MICROSOFT.KEYVAULT" and Category == "AuditEvent"
-| where OperationName contains "Secret"
-| project TimeGenerated, OperationName, ResultType, ResultDescription,
-          identity_principalId_g, identity_claim_appid_g, identity_claim_sub_s, CallerIPAddress
-| top 50 by TimeGenerated desc
-```
-
-Interpretation:
-- `identity_claim_appid_g` → **clientId** (should equal **UAMI_CLIENT_ID**)
-- `identity_principalId_g` → **principalId** (should equal **UAMI_PRINCIPAL_ID**)
-- `identity_claim_sub_s` → **K8s SA subject** (should be `system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>`)
-- `ResultDescription`:
-  - `AccessDenied` → **RBAC** issue (role/scope/principal)
-  - `ForbiddenByFirewall` / `IpNotAllowed` → **Network/DNS** (Private Endpoint/DNS path)
-
-### 4.3 (Optional) DNS Yes/No Without Pulling New Images
-
-> From **any existing pod** in the same namespace (no interactive shell needed):
-
-```bash
-kubectl exec -n "$NAMESPACE" "$POD" -- getent hosts "$KV_NAME.vault.azure.net" || \
-kubectl exec -n "$NAMESPACE" "$POD" -- host "$KV_NAME.vault.azure.net" || \
-kubectl exec -n "$NAMESPACE" "$POD" -- ping -c1 "$KV_NAME.vault.azure.net"
-```
-
-- **Private IP (10.x/172.16/192.168)** → Private Endpoint/DNS path OK  
-- **Public IP (~20.x) or NXDOMAIN** → DNS/zone link issue (even if SP worked previously)
-
-> Your app should use the **public** FQDN: `https://<KV_NAME>.vault.azure.net`. DNS will CNAME it to the `privatelink` host that resolves to the **private IP**.
 
 ---
 
-## 5) Common Pitfalls (Quick Checklist)
+Quick diagnostics (still with kubectl only)
 
-- FC **subject** must **exactly** equal `system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>`.
-- SA **annotation** & pod **label** missing → token not projected.
-- `AZURE_CLIENT_ID` not set → SDK may not pick your UAMI.
-- KV role assigned to **wrong principal** (e.g., used `clientId` instead of `principalId`) or **wrong scope** (RG only).
-- KV **Public network access = Disabled** but **Private DNS** not linked to **AKS VNet** (A record for `<KV_NAME>` missing/incorrect).
-- App calling the wrong host (use `https://<KV_NAME>.vault.azure.net`, **not** `privatelink` FQDN directly).
+What SA name does the controller expect?
 
----
 
-## 6) If It Still Fails — Single-Line Fixes per Root Cause
+kubectl -n akv2k8s get deploy akv2k8s-akv2k8s-controller \
+  -o jsonpath='{.spec.template.spec.serviceAccountName}{"\n"}'
 
-- **RBAC (`AccessDenied`)**  
-  ```bash
-  az role assignment create --assignee "$UAMI_PRINCIPAL_ID" --role "Key Vault Secrets User" --scope "$VAULT_ID"
-  ```
+Is any SA present?
 
-- **Network (`ForbiddenByFirewall` / `IpNotAllowed`)**  
-  In Portal: Private DNS zone `privatelink.vaultcore.azure.net` →  
-  • **Record sets**: A-record `<KV_NAME>` → **PE private IP**  
-  • **Virtual network links**: ensure the **AKS nodes’ VNet** is linked
 
-- **SDK not selecting UAMI**  
-  ```bash
-  kubectl set env deployment/"$DEPLOYMENT" -n "$NAMESPACE" AZURE_CLIENT_ID="$UAMI_CLIENT_ID"
-  kubectl rollout restart deploy/"$DEPLOYMENT" -n "$NAMESPACE"
-  ```
+kubectl -n akv2k8s get sa
+
+Why Helm didn’t create it? (read the rendered HR values)
+
+
+kubectl -n akv2k8s get helmrelease akv2k8s -o yaml | grep -A12 -i 'serviceAccount'
+
+Helm/Kustomize controller logs (if reconcile seems stuck)
+
+
+kubectl -n flux-system logs deploy/helm-controller     --tail=200 | grep -i akv2k8s
+kubectl -n flux-system logs deploy/kustomize-controller --tail=200 | grep -i akv2k8s
+
 
 ---
 
-## 7) Optional: One-Shot Smoke Pod (to validate WI injection only)
+Bottom line
 
-```bash
-kubectl run wi-smoke -n "$NAMESPACE" --image=busybox --restart=Never --command \
-  -- sh -c 'sleep 600' \
-  --overrides '{
-    "apiVersion":"v1",
-    "metadata":{"labels":{"azure.workload.identity/use":"true"}},
-    "spec":{
-      "serviceAccountName":"'"$SERVICE_ACCOUNT"'",
-      "automountServiceAccountToken": true,
-      "containers":[{"name":"box","image":"busybox","args":["sh","-c","sleep 600"],
-        "env":[{"name":"AZURE_CLIENT_ID","value":"'"$UAMI_CLIENT_ID"'"}]}]
-    }}'
+You can recover and switch to MI right now using only kubectl (create SA + annotate + restart).
 
-# Token must exist:
-kubectl exec -n "$NAMESPACE" wi-smoke -- ls /var/run/secrets/azure/tokens || true
-kubectl delete pod wi-smoke -n "$NAMESPACE" --ignore-not-found
-```
+You can trigger reconciles with a simple annotation—no Flux CLI.
 
----
+Then, for long-term stability, codify the SA creation/annotations in Git so Flux keeps it consistent.
 
-### TL;DR Execution Order
 
-1. **Section 0 & Derive** → fill variables, compute IDs.  
-2. **Section 1** → annotate SA, patch Deployment, set env, restart.  
-3. **Section 2** → verify (or recreate) Federated Credential (issuer/subject/audience).  
-4. **Section 3** → confirm RBAC on **vault** to **UAMI principalId** (Secrets User).  
-5. **Section 4** → decisive checks: pod token/env + KV AuditEvent; optional DNS yes/no.  
-6. Fix per **Section 6** based on the exact result (`AccessDenied` vs `ForbiddenByFirewall`).
-```
-
-# Save the file
-file_path = '/mnt/data/aks_workload_identity_keyvault_runbook.md'
-with open(file_path, 'w') as f:
-    f.write(md_content)
-
-file_path
