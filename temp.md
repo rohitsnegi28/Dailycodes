@@ -1,4 +1,4 @@
-Of course. Here is the complete and detailed database design document in a clean, final format.
+
 Self-Service Module: Database Design
 Date: October 12, 2025
 1. Introduction
@@ -60,10 +60,40 @@ erDiagram
 
 3. Master Tables
 These tables store static metadata that defines the building blocks for the entire report creation process.
- * tbl_ONLINE_SS_CATEGORY: Stores categories to organize report templates.
- * tbl_ONLINE_SS_DATASOURCE: Defines every available data source (typically a view) for reporting.
- * tbl_ONLINE_SS_DATASOURCE_FIELD_MAPPING: Details every field within each data source, controlling its display, formatting, and filter behavior.
- * tbl_ONLINE_SS_DATASOURCE_JOINING_CONDITION: Stores the predefined JOIN conditions between any two data sources.
+3.1. tbl_ONLINE_SS_CATEGORY
+ * Purpose: Stores categories to organize report templates.
+ * Primary Key: (CAT_CD, CAT_LANG)
+| Key Column Name | Data Type | Description |
+|---|---|---|
+| CAT_CD | varchar(15) | (PK) The unique code for the category. |
+| CAT_LANG | varchar(1) | (PK) The language code for the display name. |
+| CAT_NAME | varchar(50) | The display name of the category. |
+3.2. tbl_ONLINE_SS_DATASOURCE
+ * Purpose: Defines every available data source (typically a view) for reporting.
+ * Primary Key: (DS_CD, DS_LANG)
+| Key Column Name | Data Type | Description |
+|---|---|---|
+| DS_CD | varchar(30) | (PK) A unique internal code assigned to each data source. |
+| DS_LANG | char(1) | (PK) The language code for the display name. |
+| DS_NAME | varchar(100) | The actual name of the database view or table. |
+| DS_DISPLAY_NAME | varchar(500) | The user-friendly name for the data source shown in the UI. |
+3.3. tbl_ONLINE_SS_DATASOURCE_FIELD_MAPPING
+ * Purpose: Details every field within each data source, controlling its display, formatting, and filter behavior.
+ * Primary Key: (DSFM_DS_CD, DSFM_FIELD_NAME, DSFM_LANG)
+| Key Column Name | Data Type | Description |
+|---|---|---|
+| DSFM_DS_CD | varchar(30) | (PK, FK) The data source code this field belongs to. |
+| DSFM_FIELD_NAME | varchar(250) | (PK) The physical column name in the database view/table. |
+| DSFM_LANG | char(1) | (PK) The language of the display name. |
+| DSFM_DS_FIELD_DISPLAY_NAME | varchar(500) | The user-friendly label for this field in the UI. |
+3.4. tbl_ONLINE_SS_DATASOURCE_JOINING_CONDITION
+ * Purpose: Stores the predefined JOIN conditions between any two data sources.
+ * Primary Key: (DSJC_DS_CD1, DSJC_DS_CD2)
+| Key Column Name | Data Type | Description |
+|---|---|---|
+| DSJC_DS_CD1 | varchar(30) | (PK, FK) The data source code for the first table in the join. |
+| DSJC_DS_CD2 | varchar(30) | (PK, FK) The data source code for the second table in the join. |
+| DSJC_JOIN_COND | varchar(max) | The literal SQL ON clause for the join (e.g., T1.ID = T2.ID). |
 4. Transactional Tables
 These tables store data generated through user activity.
 4.1. tbl_ONLINE_SS_TEMPLATE
