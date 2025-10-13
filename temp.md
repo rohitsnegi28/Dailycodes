@@ -14,12 +14,3 @@ function sanitizeObject(obj) {
   }
   return clean;
 }
-
-const safeFasatValues = sanitizeObject(fasatValues);
-
-<FasatPage
-  backBtnEnabled
-  backBtnText={t(staticCommonLabelKeys.COMMON_BUTTON_BACK)}
-  showExportBtn={false}
-  {...safeFasatValues}
-/>
